@@ -85,14 +85,33 @@ def _apply_item(_args, target_name: str, item_id: int):
         Lobby.chat_message(_args['client'], f'Player {target_name} was not found.', 2)
         return
 
-    _args['mysql'].execute(
-        '''SELECT `id`, `item_id`, `duration`, `part_type` FROM `game_items` WHERE `item_id` = %s''',
-        [item_id]
-    )
-    item = _args['mysql'].fetchone()
+    item = None
+    for column in ['name', 'item_name']:
+        try:
+            _args['mysql'].execute(
+                f'''SELECT `id`, `item_id`, `duration`, `part_type`, `{column}` AS `item_name`
+                    FROM `game_items`
+                    WHERE `item_id` = %s''',
+                [item_id]
+            )
+            item = _args['mysql'].fetchone()
+            break
+        except Exception:
+            continue
+
+    # Fallback for schemas that do not store a name column in game_items
+    if item is None:
+        _args['mysql'].execute(
+            '''SELECT `id`, `item_id`, `duration`, `part_type` FROM `game_items` WHERE `item_id` = %s''',
+            [item_id]
+        )
+        item = _args['mysql'].fetchone()
+
     if item is None:
         Lobby.chat_message(_args['client'], f'Item ID {item_id} was not found.', 2)
         return
+
+    item_name = item['item_name'] if 'item_name' in item and item['item_name'] else f'ID {item_id}'
 
     # Reuse Character.get_items to avoid mismatches with how empty slots are represented in DB (NULL vs 0).
     inventory = get_items(_args, record['character_id'], 'inventory')
@@ -111,9 +130,9 @@ def _apply_item(_args, target_name: str, item_id: int):
         sync_args['client'] = target_client
         sync_args['socket'] = target_client['socket']
         sync_inventory(sync_args)
-        _notify_target(_args, target_client, f'You received item {item_id}.')
+        _notify_target(_args, target_client, f'You received item: {item_name}.')
 
-    Lobby.chat_message(_args['client'], f'Sent item {item_id} to {target_name}.', 3)
+    Lobby.chat_message(_args['client'], f'Sent item "{item_name}" to {target_name}.', 3)
 
 
 def _find_items_by_name(_args, item_name: str):
