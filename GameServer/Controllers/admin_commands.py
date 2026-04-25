@@ -3,7 +3,7 @@ from typing import Callable
 
 from GameServer.Controllers import Lobby
 from GameServer.Controllers.Shop import sync_cash, sync_inventory
-from GameServer.Controllers.Character import add_item, get_available_inventory_slot
+from GameServer.Controllers.Character import add_item, get_available_inventory_slot, get_items
 
 
 ANNOUNCEMENT_PREFIXES = {'announce', 'anuncio', 'anúncio'}
@@ -94,18 +94,8 @@ def _apply_item(_args, target_name: str, item_id: int):
         Lobby.chat_message(_args['client'], f'Item ID {item_id} was not found.', 2)
         return
 
-    _args['mysql'].execute(
-        '''SELECT `item_1`, `item_2`, `item_3`, `item_4`, `item_5`, `item_6`, `item_7`, `item_8`, `item_9`, `item_10`,
-                  `item_11`, `item_12`, `item_13`, `item_14`, `item_15`, `item_16`, `item_17`, `item_18`, `item_19`,
-                  `item_20` FROM `inventory` WHERE `character_id` = %s''',
-        [record['character_id']]
-    )
-    inventory_row = _args['mysql'].fetchone()
-    if inventory_row is None:
-        Lobby.chat_message(_args['client'], f'Inventory for {target_name} was not found.', 2)
-        return
-
-    inventory = {idx: {'id': 0 if value is None else 1} for idx, value in enumerate(inventory_row.values())}
+    # Reuse Character.get_items to avoid mismatches with how empty slots are represented in DB (NULL vs 0).
+    inventory = get_items(_args, record['character_id'], 'inventory')
     available_slot = get_available_inventory_slot(inventory)
     if available_slot is None:
         Lobby.chat_message(_args['client'], f'{target_name} has a full inventory.', 2)
