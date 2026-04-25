@@ -617,6 +617,10 @@ def statistic_validation(**_args):
     if int(slot) != 1:
         return
 
+    # Do not run this anti-cheat path for solo runs to avoid false positives.
+    if len(room['slots']) <= 1:
+        return
+
     # Avoid false positives on high-level maps played by low-level players.
     # In this scenario the client/server stat view can diverge and incorrectly trigger suspension.
     if room['game_type'] == MODE_PLANET and room['level'] in PLANET_MAP_TABLE:
@@ -1230,6 +1234,10 @@ def anti_hack_check(_args, room):
 
     # If the room game type is equal to Planet mode, perform the attack score and minimum monster checks
     if room['game_type'] == MODE_PLANET:
+        # Solo runs can fail aggregate-score heuristics and cause false bans. Skip for single-player rooms.
+        if len(room['slots']) <= 1:
+            return
+
         # If the room level is not registered in the map table, skip checks to avoid false positives.
         if room['level'] not in PLANET_MAP_TABLE:
             return
