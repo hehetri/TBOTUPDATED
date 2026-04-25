@@ -126,6 +126,25 @@ def _apply_item(_args, target_name: str, item_id: int):
     Lobby.chat_message(_args['client'], f'Sent item {item_id} to {target_name}.', 3)
 
 
+def _find_items_by_name(_args, item_name: str):
+    # Some databases store the display name as `name`, others as `item_name`.
+    for column in ['name', 'item_name']:
+        try:
+            _args['mysql'].execute(
+                f'''SELECT `item_id`, `{column}` AS `item_name`
+                    FROM `game_items`
+                    WHERE `{column}` LIKE %s
+                    ORDER BY `item_id` ASC
+                    LIMIT 10''',
+                [f'%{item_name}%']
+            )
+            return _args['mysql'].fetchall()
+        except Exception:
+            continue
+
+    return None
+
+
 def handle_admin_command(_args, command_text: str) -> bool:
     if not command_text.startswith('@'):
         return False
@@ -136,7 +155,8 @@ def handle_admin_command(_args, command_text: str) -> bool:
         Lobby.chat_message(
             _args['client'],
             'Usage: @announce <message> | @cash <user> <amount> | @gigas <user> <amount> | @item <item_id> <user> | '
-            '@exit | @win | @lose | @timeout | @timeoutdm | @speed <value> | @gauge <value> | @reset | @kick <player> | @ban <player>',
+            '@itemname <name> | @exit | @win | @lose | @timeout | @timeoutdm | @speed <value> | @gauge <value> | '
+            '@reset | @kick <player> | @ban <player>',
             2,
         )
         return True
@@ -147,6 +167,7 @@ def handle_admin_command(_args, command_text: str) -> bool:
             'cash',
             'gigas',
             'item',
+            'itemname',
             'exit',
             'win',
             'lose',
@@ -210,6 +231,26 @@ def handle_admin_command(_args, command_text: str) -> bool:
             return True
 
         _apply_item(_args, target_name, item_id)
+        return True
+
+    if action == 'itemname':
+        query_name = command_body[len(parts[0]):].strip()
+        if not query_name:
+            Lobby.chat_message(_args['client'], 'Usage: @itemname <name>', 2)
+            return True
+
+        found_items = _find_items_by_name(_args, query_name)
+        if found_items is None:
+            Lobby.chat_message(_args['client'], 'This database does not expose an item name column in game_items.', 2)
+            return True
+
+        if len(found_items) == 0:
+            Lobby.chat_message(_args['client'], f'No item found for "{query_name}".', 2)
+            return True
+
+        Lobby.chat_message(_args['client'], f'Item matches for "{query_name}" (max 10):', 2)
+        for item in found_items:
+            Lobby.chat_message(_args['client'], f'@itemname {item["item_name"]} + ID {item["item_id"]}', 2)
         return True
 
     if action == 'exit':
