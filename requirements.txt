@@ -1,0 +1,5 @@
+pip install python-dotenv==0.18.0
+pip install mysql-connector-python==8.0.25
+pip install pyrate-limiter==2.8.1
+pip install argon2-cffi==21.3.0
+pip install requests
