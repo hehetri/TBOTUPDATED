@@ -1223,6 +1223,16 @@ def anti_hack_check(_args, room):
 
     # If the room game type is equal to Planet mode, perform the attack score and minimum monster checks
     if room['game_type'] == MODE_PLANET:
+        # If the room level is not registered in the map table, skip checks to avoid false positives.
+        if room['level'] not in PLANET_MAP_TABLE:
+            return
+
+        # If at least one player is below the recommended map level, skip anti-hack validation for this match.
+        # These thresholds are tuned for recommended-level runs and can incorrectly flag low-level players.
+        recommended_level = PLANET_MAP_TABLE[room['level']][2]
+        for _, slot in room['slots'].items():
+            if slot['client']['character']['level'] < recommended_level:
+                return
 
         '''
         Point validation:   The attack score of every slot in the room is validated against
