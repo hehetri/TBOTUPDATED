@@ -617,6 +617,13 @@ def statistic_validation(**_args):
     if int(slot) != 1:
         return
 
+    # Avoid false positives on high-level maps played by low-level players.
+    # In this scenario the client/server stat view can diverge and incorrectly trigger suspension.
+    if room['game_type'] == MODE_PLANET and room['level'] in PLANET_MAP_TABLE:
+        recommended_level = PLANET_MAP_TABLE[room['level']][2]
+        if _args['client']['character']['level'] < recommended_level:
+            return
+
     # Retrieve wearing items, so we can calculate the expected statistic based on the items the player is wearing
     wearing_items = get_items(_args, _args['client']['character']['id'], 'wearing')
 
