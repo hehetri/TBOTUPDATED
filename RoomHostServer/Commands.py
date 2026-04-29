@@ -11,10 +11,7 @@ This method will execute a command based on the received command ID
 
 
 def execute(server, address, game_server, connection_handler, packet):
-    packets = {
-        'c800': ping,
-        'c900': host_update
-    }.get(packet.id, unknown)(**locals())
+    PACKET_HANDLERS.get(packet.id, unknown)(**locals())
 
 
 ''' This handler will handle unknown packets by printing its information to stdout '''
@@ -69,3 +66,9 @@ def host_update(**_args):
                     ports.append_integer(0, 2, 'big')
             client['socket'].sendall(ports.packet)
             break
+
+
+PACKET_HANDLERS = {
+    'c800': ping,
+    'c900': host_update
+}
