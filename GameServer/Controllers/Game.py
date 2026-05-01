@@ -7,6 +7,8 @@ import _thread
 import datetime
 import random
 import time
+import threading
+import queue
 
 import MySQL.Interface as MySQL
 from GameServer.Controllers.admin_commands import handle_admin_command
@@ -27,6 +29,122 @@ from Packet.Write import Write as PacketWrite
 """
 This controller is responsible for handling all game related actions
 """
+
+USE_ITEM_TASK_QUEUE = queue.Queue(maxsize=2048)
+USE_ITEM_WORKER_STARTED = False
+ITEM_ATTRIBUTE_CACHE = {}
+ITEM_CACHE_LOCK = threading.Lock()
+
+
+def _start_use_item_worker():
+    global USE_ITEM_WORKER_STARTED
+    if USE_ITEM_WORKER_STARTED:
+        return
+    USE_ITEM_WORKER_STARTED = True
+    _thread.start_new_thread(_use_item_worker_loop, ())
+
+
+def _get_cached_game_item(mysql_cursor, item_id):
+    with ITEM_CACHE_LOCK:
+        if item_id in ITEM_ATTRIBUTE_CACHE:
+            return ITEM_ATTRIBUTE_CACHE[item_id]
+
+    mysql_cursor.execute(
+        '''SELECT `id`, `item_id`, `buyable`, `gold_price`, `cash_price`, `part_type`, `duration`
+           FROM `game_items` WHERE `item_id` = %s''',
+        [item_id]
+    )
+    item = mysql_cursor.fetchone()
+    if item is None:
+        return None
+
+    with ITEM_CACHE_LOCK:
+        ITEM_ATTRIBUTE_CACHE[item_id] = item
+    return item
+
+
+def _use_item_worker_loop():
+    while True:
+        task = USE_ITEM_TASK_QUEUE.get()
+        try:
+            _process_use_item_task(task)
+        except Exception as e:
+            print('[GameServer/use_item_worker] Failed to process task:', e)
+        finally:
+            USE_ITEM_TASK_QUEUE.task_done()
+
+
+def _process_use_item_task(task):
+    mysql_connection = MySQL.get_connection()
+    mysql = mysql_connection.cursor(dictionary=True, buffered=True)
+    try:
+        _args, room, item_type = task['args'], task['room'], task['item_type']
+
+        # If room is no longer active, stop.
+        if str(room['id']) not in _args['server'].rooms or room is not _args['server'].rooms[str(room['id'])]:
+            return
+
+        if item_type in [OIL_YELLOW, OIL_ORANGE, OIL_BLUE, OIL_PINK]:
+            oil_awards = {
+                OIL_YELLOW: 5,
+                OIL_ORANGE: 15,
+                OIL_BLUE: 20,
+                OIL_PINK: 30
+            }
+            award = oil_awards[item_type]
+            _args['client']['character']['currency_botstract'] += award
+            mysql.execute(
+                """UPDATE `characters` SET `currency_botstract` = (`currency_botstract` + %s) WHERE `id` = %s""",
+                [award, _args['client']['character']['id']]
+            )
+
+        if item_type < 18:
+            mysql_connection.commit()
+            return
+
+        inventory = get_items({'mysql': mysql, 'client': _args['client']}, _args['client']['character']['id'], 'inventory')
+        available_slot = get_available_inventory_slot(inventory)
+        pickup = PacketWrite()
+        pickup.add_header(bytes=[0x2C, 0x2F])
+
+        if available_slot is None:
+            pickup.append_bytes(bytes=[0x00, 0x44])
+            return _args['socket'].sendall(pickup.packet)
+
+        if item_type == CHEST_GOLD:
+            item_id = [6000001, 6000002, 6000003][random.randint(0, 2)]
+        else:
+            if room['level'] not in PLANET_DROPS or item_type not in PLANET_DROPS[room['level']]:
+                return
+            drops = PLANET_DROPS[room['level']][item_type]
+            sc, last_chance, item_id = random.random(), 0.0, 0
+            for iid, chance in drops:
+                if sc <= (chance + last_chance):
+                    item_id = iid
+                    break
+                last_chance += chance
+
+        if item_type in [BOX_HEAD, BOX_BODY, BOX_ARMS]:
+            new_item_id = list(str(item_id))
+            new_item_id[1] = str(_args['client']['character']['type'])
+            item_id = int("".join(new_item_id))
+
+        item = _get_cached_game_item(mysql, item_id)
+        if item is None:
+            pickup.append_bytes(bytes=[0x00, 0x00])
+            return _args['socket'].sendall(pickup.packet)
+
+        add_item({'mysql': mysql, 'client': _args['client']}, item, available_slot)
+        mysql_connection.commit()
+
+        pickup.append_bytes(bytes=[0x01, 0x00])
+        pickup.append_integer(item_id, 4, 'little')
+        pickup.append_integer(0, 4, 'little')
+        pickup.append_integer(Room.get_slot(_args, room) - 1, 2, 'little')
+        _args['socket'].sendall(pickup.packet)
+    finally:
+        mysql.close()
+        mysql_connection.close()
 
 '''
 This method will tell the room that the client has finished loading the map
@@ -271,14 +389,17 @@ This method will handle picking up items which were dropped from monsters
 
 
 def use_item(**_args):
+    _start_use_item_worker()
+
     # If the client is not in a room, drop the packet
     room = Room.get_room(_args)
     if not room:
         return
 
-    # Read item index and type from packet
-    item_index = _args['packet'].get_byte(2)
-    item_type = _args['packet'].get_byte(3)
+    # Fast packet parsing via direct byte offsets (lower overhead than helper methods for hot path packets).
+    data = _args['packet'].data
+    item_index = data[2]
+    item_type = data[3]
 
     # Check if the drop is valid. If it is not, change the item type to 0 so nothing happens.
     if item_index not in room['drops'] or room['drops'][item_index]['used'] is True \
@@ -303,101 +424,15 @@ def use_item(**_args):
         for key, slot in room['slots'].items():
             slot['dead'] = False
 
-    # If the item is OIL, process oil pickup
-    if item_type in [OIL_YELLOW, OIL_ORANGE, OIL_BLUE, OIL_PINK]:
-        # Container for the amount of oil a player receives per type
-        oil_awards = {
-            OIL_YELLOW: 5,
-            OIL_ORANGE: 15,
-            OIL_BLUE: 20,
-            OIL_PINK: 30
-        }
-
-        # Retrieve award amount and update the character
-        award = oil_awards[item_type]
-        _args['client']['character']['currency_botstract'] += award
-        _args['mysql'].execute(
-            """UPDATE `characters` SET `currency_botstract` = (`currency_botstract` + %s) WHERE `id` = %s""", [
-                award,
-                _args['client']['character']['id']
-            ])
-
-    # If the item type is equal or exceeds 18, process a box pickup
-    if item_type >= 18:
-
-        # Find available slot
-        inventory = get_items(_args, _args['client']['character']['id'], 'inventory')
-        available_slot = get_available_inventory_slot(inventory)
-
-        # Construct pickup packet
-        pickup = PacketWrite()
-        pickup.add_header(bytes=[0x2C, 0x2F])
-
-        # Send inventory full packet if we do not have an available slot
-        if available_slot is None:
-            pickup.append_bytes(bytes=[0x00, 0x44])
-            return _args['socket'].sendall(pickup.packet)
-
-        # If the item is gold, calculate what gold bar to award
-        if item_type == CHEST_GOLD:
-            item_id = [
-                6000001,
-                6000002,
-                6000003
-            ][random.randint(0, 2)]
-        else:
-
-            # If we do not have this item type in the drop table, do nothing
-            if item_type not in PLANET_DROPS[room['level']]:
-                return
-
-            # Retrieve random drop and calculate the chance
-            drops = PLANET_DROPS[room['level']][item_type]
-
-            # Calculate the chance
-            sc = random.random()
-            last_chance = 0.0
-
-            # Based on the randomized chance, retrieve the item we are going to award
-            item_id = 0
-            for iid, chance in drops:
-                if sc <= (chance + last_chance):
-                    item_id = iid
-                    break
-                else:
-
-                    # No match? Try again with a higher chance
-                    last_chance += chance
-
-        # Mutate the item ID to be of our bot type if the item type is either a HEAD, BODY or ARM
-        if item_type in [BOX_HEAD, BOX_BODY, BOX_ARMS]:
-            # Create a list of the item ID and append the character type to it
-            new_item_id = list(str(item_id))
-            new_item_id[1] = str(_args['client']['character']['type'])
-
-            # Convert the item ID back to an integer
-            item_id = int("".join(new_item_id))
-
-        # Find item in the database
-        _args['mysql'].execute(
-            '''SELECT `id`, `item_id`, `buyable`, `gold_price`, `cash_price`, `part_type`, `duration` FROM `game_items` WHERE `item_id` = %s''',
-            [item_id])
-        item = _args['mysql'].fetchone()
-
-        # If the item hasn't been found, return an error
-        if item is None:
-            pickup.append_bytes(bytes=[0x00, 0x00])
-            return _args['socket'].sendall(pickup.packet)
-
-        # Add item to inventory of the user
-        add_item(_args, item, available_slot)
-
-        # Send pickup packet to the player
-        pickup.append_bytes(bytes=[0x01, 0x00])
-        pickup.append_integer(item_id, 4, 'little')
-        pickup.append_integer(0, 4, 'little')
-        pickup.append_integer(Room.get_slot(_args, room) - 1, 2, 'little')
-        _args['socket'].sendall(pickup.packet)
+    # Offload inventory/currency side effects to async task queue to keep network thread lightweight.
+    try:
+        USE_ITEM_TASK_QUEUE.put_nowait({
+            'args': _args,
+            'room': room,
+            'item_type': item_type
+        })
+    except queue.Full:
+        print('[GameServer/use_item] Queue full, dropping use_item task for account:', _args['client']['account_id'])
 
 
 '''
@@ -616,6 +651,17 @@ def statistic_validation(**_args):
     # Additionally, this check only functions properly on planet mode
     if int(slot) != 1:
         return
+
+    # Do not run this anti-cheat path for solo runs to avoid false positives.
+    if len(room['slots']) <= 1:
+        return
+
+    # Avoid false positives on high-level maps played by low-level players.
+    # In this scenario the client/server stat view can diverge and incorrectly trigger suspension.
+    if room['game_type'] == MODE_PLANET and room['level'] in PLANET_MAP_TABLE:
+        recommended_level = PLANET_MAP_TABLE[room['level']][2]
+        if _args['client']['character']['level'] < recommended_level:
+            return
 
     # Retrieve wearing items, so we can calculate the expected statistic based on the items the player is wearing
     wearing_items = get_items(_args, _args['client']['character']['id'], 'wearing')
@@ -1223,6 +1269,20 @@ def anti_hack_check(_args, room):
 
     # If the room game type is equal to Planet mode, perform the attack score and minimum monster checks
     if room['game_type'] == MODE_PLANET:
+        # Solo runs can fail aggregate-score heuristics and cause false bans. Skip for single-player rooms.
+        if len(room['slots']) <= 1:
+            return
+
+        # If the room level is not registered in the map table, skip checks to avoid false positives.
+        if room['level'] not in PLANET_MAP_TABLE:
+            return
+
+        # If at least one player is below the recommended map level, skip anti-hack validation for this match.
+        # These thresholds are tuned for recommended-level runs and can incorrectly flag low-level players.
+        recommended_level = PLANET_MAP_TABLE[room['level']][2]
+        for _, slot in room['slots'].items():
+            if slot['client']['character']['level'] < recommended_level:
+                return
 
         '''
         Point validation:   The attack score of every slot in the room is validated against
