@@ -279,21 +279,21 @@ def use_item(**_args):
     # Read item index and type from packet
     item_index = _args['packet'].get_byte(2)
     item_type = _args['packet'].get_byte(3)
+    room_slot = Room.get_slot(_args, room)
 
-    # Check if the drop is valid. If it is not, change the item type to 0 so nothing happens.
-    if item_index not in room['drops'] or room['drops'][item_index]['used'] is True \
-            or room['drops'][item_index]['type'] != item_type:
-        item_type = 0
+    # Fast-path validation: invalid/duplicate drop packets are ignored immediately.
+    # This avoids unnecessary packet construction, broadcasts and DB work when clients resend the same pickup packet.
+    drop = room['drops'].get(item_index)
+    if drop is None or drop['used'] is True or drop['type'] != item_type:
+        return
 
-    # Mark the drop as used before further processing of the packet
-    # but only if the item index is actually registered
-    if item_index in room['drops']:
-        room['drops'][item_index]['used'] = True
+    # Mark the drop as used before further processing to avoid race/duplicate processing
+    drop['used'] = True
 
     # Broadcast the use canister packet to the room
     use_canister = PacketWrite()
     use_canister.add_header(bytearray([0x23, 0x2F]))
-    use_canister.append_integer(Room.get_slot(_args, room) - 1, 2, 'little')
+    use_canister.append_integer(room_slot - 1, 2, 'little')
     use_canister.append_integer(item_index, 1, 'little')
     use_canister.append_integer(item_type, 4, 'little')
     _args['connection_handler'].room_broadcast(room['id'], use_canister.packet)
@@ -396,7 +396,7 @@ def use_item(**_args):
         pickup.append_bytes(bytes=[0x01, 0x00])
         pickup.append_integer(item_id, 4, 'little')
         pickup.append_integer(0, 4, 'little')
-        pickup.append_integer(Room.get_slot(_args, room) - 1, 2, 'little')
+        pickup.append_integer(room_slot - 1, 2, 'little')
         _args['socket'].sendall(pickup.packet)
 
 
