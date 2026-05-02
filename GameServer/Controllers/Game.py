@@ -35,6 +35,92 @@ USE_ITEM_WORKER_STARTED = False
 USE_ITEM_WORKER_COUNT = 4
 ITEM_ATTRIBUTE_CACHE = {}
 ITEM_CACHE_LOCK = threading.Lock()
+DROP_STATE_AVAILABLE = 0
+DROP_STATE_RESERVED = 1
+DROP_STATE_COLLECTED = 2
+DROP_STATE_EXPIRED = 3
+
+
+class PacketGuard:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._last = {}
+
+    def should_process_packet(self, character_id, packet_name, payload, now_ms=None, debounce_ms=180):
+        if now_ms is None:
+            now_ms = int(time.time() * 1000)
+        key = (character_id, packet_name, bytes(payload))
+        with self._lock:
+            last = self._last.get(key, 0)
+            if (now_ms - last) < debounce_ms:
+                return False
+            self._last[key] = now_ms
+            return True
+
+
+class DropManager:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._log_limiter = {}
+
+    def _rate_log(self, key, message, window_ms=1200):
+        now_ms = int(time.time() * 1000)
+        last = self._log_limiter.get(key, 0)
+        if now_ms - last >= window_ms:
+            self._log_limiter[key] = now_ms
+            print(message)
+
+    def spawn_drop(self, room, drop_index, item_type, position=None, owner_id=None):
+        with self._lock:
+            room['drops'][drop_index] = {
+                'id': drop_index,
+                'type': item_type,
+                'state': DROP_STATE_AVAILABLE,
+                'reserved_by': None,
+                'reserved_at': 0,
+                'position': position,
+                'owner_id': owner_id
+            }
+
+    def get_drop(self, room, drop_id):
+        return room['drops'].get(drop_id)
+
+    def reserve_drop(self, room, drop_id, character_id):
+        with self._lock:
+            drop = room['drops'].get(drop_id)
+            if drop is None:
+                return False, 'drop inexistente'
+            if drop['state'] != DROP_STATE_AVAILABLE:
+                return False, 'drop indisponivel'
+            drop['state'] = DROP_STATE_RESERVED
+            drop['reserved_by'] = character_id
+            drop['reserved_at'] = int(time.time() * 1000)
+            return True, drop
+
+    def collect_drop(self, room, drop_id, character_id):
+        with self._lock:
+            drop = room['drops'].get(drop_id)
+            if drop is None:
+                return False
+            if drop['state'] != DROP_STATE_RESERVED or drop['reserved_by'] != character_id:
+                return False
+            drop['state'] = DROP_STATE_COLLECTED
+            return True
+
+    def release_drop(self, room, drop_id, character_id, expire=False):
+        with self._lock:
+            drop = room['drops'].get(drop_id)
+            if drop is None:
+                return
+            if drop['reserved_by'] != character_id:
+                return
+            drop['state'] = DROP_STATE_EXPIRED if expire else DROP_STATE_AVAILABLE
+            drop['reserved_by'] = None
+            drop['reserved_at'] = 0
+
+
+PACKET_GUARD = PacketGuard()
+DROP_MANAGER = DropManager()
 
 
 def _start_use_item_worker():
@@ -83,11 +169,14 @@ def _process_use_item_task(task):
         client = task['client']
         room = task['room']
         item_type = task['item_type']
+        drop_id = task['drop_id']
+        character_id = task['character_id']
         socket_ref = task['socket']
         server = task['server']
 
         # If room is no longer active, stop.
         if str(room['id']) not in server.rooms or room is not server.rooms[str(room['id'])]:
+            DROP_MANAGER.release_drop(room, drop_id, character_id, expire=True)
             return
 
         if item_type in [OIL_YELLOW, OIL_ORANGE, OIL_BLUE, OIL_PINK]:
@@ -106,6 +195,8 @@ def _process_use_item_task(task):
 
         if item_type < 18:
             mysql_connection.commit()
+            DROP_MANAGER.collect_drop(room, drop_id, character_id)
+            DROP_MANAGER._rate_log(('drop_collected', room['id'], drop_id), '[Drop] drop coletado com sucesso', 500)
             return
 
         inventory = get_items({'mysql': mysql, 'client': client}, client['character']['id'], 'inventory')
@@ -115,12 +206,16 @@ def _process_use_item_task(task):
 
         if available_slot is None:
             pickup.append_bytes(bytes=[0x00, 0x44])
+            DROP_MANAGER.release_drop(room, drop_id, character_id, expire=False)
+            DROP_MANAGER._rate_log(('inv_full', character_id), '[Drop] inventario cheio', 800)
             return socket_ref.sendall(pickup.packet)
 
         if item_type == CHEST_GOLD:
             item_id = [6000001, 6000002, 6000003][random.randint(0, 2)]
         else:
             if room['level'] not in PLANET_DROPS or item_type not in PLANET_DROPS[room['level']]:
+                DROP_MANAGER.release_drop(room, drop_id, character_id, expire=True)
+                DROP_MANAGER._rate_log(('invalid_attempt', character_id), '[Drop] tentativa invalida', 800)
                 return
             drops = PLANET_DROPS[room['level']][item_type]
             sc, last_chance, item_id = random.random(), 0.0, 0
@@ -138,6 +233,8 @@ def _process_use_item_task(task):
         item = _get_cached_game_item(mysql, item_id)
         if item is None:
             pickup.append_bytes(bytes=[0x00, 0x00])
+            DROP_MANAGER.release_drop(room, drop_id, character_id, expire=False)
+            DROP_MANAGER._rate_log(('item_missing', character_id), '[Drop] item_id invalido', 800)
             return socket_ref.sendall(pickup.packet)
 
         add_item({'mysql': mysql, 'client': client}, item, available_slot)
@@ -153,6 +250,11 @@ def _process_use_item_task(task):
                 break
         pickup.append_integer(room_slot - 1, 2, 'little')
         socket_ref.sendall(pickup.packet)
+        DROP_MANAGER.collect_drop(room, drop_id, character_id)
+        DROP_MANAGER._rate_log(('drop_collected', room['id'], drop_id), '[Drop] drop coletado com sucesso', 500)
+    except Exception:
+        DROP_MANAGER.release_drop(task['room'], task['drop_id'], task['character_id'], expire=False)
+        raise
     finally:
         mysql.close()
         mysql_connection.close()
@@ -348,7 +450,7 @@ def monster_kill(**_args):
             if random.random() < (chance * (assistant_multiplication if drop < BOX_ARMS else 1.0)) \
                     and room['drop_index'] < 256:
                 monster_drops.append(bytes([room['drop_index'], drop, 0, 0, 0]))
-                room['drops'][room['drop_index']] = {'type': drop, 'used': False}
+                DROP_MANAGER.spawn_drop(room, room['drop_index'], drop)
                 room['drop_index'] += 1
 
     # Construct drop bytes for the response packet
@@ -411,16 +513,33 @@ def use_item(**_args):
     data = _args['packet'].data
     item_index = data[2]
     item_type = data[3]
+    character_id = _args['client']['character']['id']
 
-    # Check if the drop is valid. If it is not, change the item type to 0 so nothing happens.
-    if item_index not in room['drops'] or room['drops'][item_index]['used'] is True \
-            or room['drops'][item_index]['type'] != item_type:
-        item_type = 0
+    if not PACKET_GUARD.should_process_packet(character_id, 'PACKET_GAME_USE_ITEM', data):
+        DROP_MANAGER._rate_log(
+            ('dup_packet', character_id, item_index, item_type),
+            '[Drop] duplicated packet ignored',
+            1500
+        )
+        return
 
-    # Mark the drop as used before further processing of the packet
-    # but only if the item index is actually registered
-    if item_index in room['drops']:
-        room['drops'][item_index]['used'] = True
+    drop = DROP_MANAGER.get_drop(room, item_index)
+    if drop is None:
+        DROP_MANAGER._rate_log(('drop_missing', room['id'], item_index), '[Drop] drop inexistente', 1200)
+        return
+
+    if drop['type'] != item_type:
+        DROP_MANAGER._rate_log(('drop_invalid_type', room['id'], item_index), '[Drop] tentativa invalida', 1200)
+        return
+
+    reserved, reserve_result = DROP_MANAGER.reserve_drop(room, item_index, character_id)
+    if not reserved:
+        DROP_MANAGER._rate_log(
+            ('drop_not_available', room['id'], item_index),
+            '[Drop] packet duplicado ignorado',
+            1200
+        )
+        return
 
     # Broadcast the use canister packet to the room
     use_canister = PacketWrite()
@@ -442,9 +561,12 @@ def use_item(**_args):
             'socket': _args['socket'],
             'server': _args['server'],
             'room': room,
-            'item_type': item_type
+            'item_type': item_type,
+            'drop_id': item_index,
+            'character_id': character_id
         })
     except queue.Full:
+        DROP_MANAGER.release_drop(room, item_index, character_id, expire=False)
         print('[GameServer/use_item] Queue full, dropping use_item task for account:', _args['client']['account_id'])
 
 
@@ -859,7 +981,7 @@ def game_end_rpc(**_args):
                     if room['drop_index'] < 256:
                         # Create and append drop data to the result and modify room state to register the drop
                         drop_result.append(bytes([room['drop_index'], drop, 0, 0, 0]))
-                        room['drops'][room['drop_index']] = {'type': drop, 'used': False}
+                        DROP_MANAGER.spawn_drop(room, room['drop_index'], drop)
                         room['drop_index'] += 1
 
                 # Create drop bytes for the drop packet
@@ -1653,7 +1775,7 @@ def incremental_canister_drops(_args, room):
 
                 # Append drop data to the canisters
                 canisters.append(data)
-                room['drops'][room['drop_index']] = {'type': drop, 'used': False}
+                DROP_MANAGER.spawn_drop(room, room['drop_index'], drop)
                 room['drop_index'] += 1
 
         # Create drop bytes for the drop packet
