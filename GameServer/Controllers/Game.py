@@ -32,6 +32,7 @@ This controller is responsible for handling all game related actions
 
 USE_ITEM_TASK_QUEUE = queue.Queue(maxsize=2048)
 USE_ITEM_WORKER_STARTED = False
+USE_ITEM_WORKER_COUNT = 4
 ITEM_ATTRIBUTE_CACHE = {}
 ITEM_CACHE_LOCK = threading.Lock()
 
@@ -41,7 +42,8 @@ def _start_use_item_worker():
     if USE_ITEM_WORKER_STARTED:
         return
     USE_ITEM_WORKER_STARTED = True
-    _thread.start_new_thread(_use_item_worker_loop, ())
+    for _ in range(USE_ITEM_WORKER_COUNT):
+        _thread.start_new_thread(_use_item_worker_loop, ())
 
 
 def _get_cached_game_item(mysql_cursor, item_id):
@@ -78,10 +80,14 @@ def _process_use_item_task(task):
     mysql_connection = MySQL.get_connection()
     mysql = mysql_connection.cursor(dictionary=True, buffered=True)
     try:
-        _args, room, item_type = task['args'], task['room'], task['item_type']
+        client = task['client']
+        room = task['room']
+        item_type = task['item_type']
+        socket_ref = task['socket']
+        server = task['server']
 
         # If room is no longer active, stop.
-        if str(room['id']) not in _args['server'].rooms or room is not _args['server'].rooms[str(room['id'])]:
+        if str(room['id']) not in server.rooms or room is not server.rooms[str(room['id'])]:
             return
 
         if item_type in [OIL_YELLOW, OIL_ORANGE, OIL_BLUE, OIL_PINK]:
@@ -92,24 +98,24 @@ def _process_use_item_task(task):
                 OIL_PINK: 30
             }
             award = oil_awards[item_type]
-            _args['client']['character']['currency_botstract'] += award
+            client['character']['currency_botstract'] += award
             mysql.execute(
                 """UPDATE `characters` SET `currency_botstract` = (`currency_botstract` + %s) WHERE `id` = %s""",
-                [award, _args['client']['character']['id']]
+                [award, client['character']['id']]
             )
 
         if item_type < 18:
             mysql_connection.commit()
             return
 
-        inventory = get_items({'mysql': mysql, 'client': _args['client']}, _args['client']['character']['id'], 'inventory')
+        inventory = get_items({'mysql': mysql, 'client': client}, client['character']['id'], 'inventory')
         available_slot = get_available_inventory_slot(inventory)
         pickup = PacketWrite()
         pickup.add_header(bytes=[0x2C, 0x2F])
 
         if available_slot is None:
             pickup.append_bytes(bytes=[0x00, 0x44])
-            return _args['socket'].sendall(pickup.packet)
+            return socket_ref.sendall(pickup.packet)
 
         if item_type == CHEST_GOLD:
             item_id = [6000001, 6000002, 6000003][random.randint(0, 2)]
@@ -126,22 +132,27 @@ def _process_use_item_task(task):
 
         if item_type in [BOX_HEAD, BOX_BODY, BOX_ARMS]:
             new_item_id = list(str(item_id))
-            new_item_id[1] = str(_args['client']['character']['type'])
+            new_item_id[1] = str(client['character']['type'])
             item_id = int("".join(new_item_id))
 
         item = _get_cached_game_item(mysql, item_id)
         if item is None:
             pickup.append_bytes(bytes=[0x00, 0x00])
-            return _args['socket'].sendall(pickup.packet)
+            return socket_ref.sendall(pickup.packet)
 
-        add_item({'mysql': mysql, 'client': _args['client']}, item, available_slot)
+        add_item({'mysql': mysql, 'client': client}, item, available_slot)
         mysql_connection.commit()
 
         pickup.append_bytes(bytes=[0x01, 0x00])
         pickup.append_integer(item_id, 4, 'little')
         pickup.append_integer(0, 4, 'little')
-        pickup.append_integer(Room.get_slot(_args, room) - 1, 2, 'little')
-        _args['socket'].sendall(pickup.packet)
+        room_slot = 1
+        for idx, slot in room['slots'].items():
+            if slot['client'] is client:
+                room_slot = int(idx)
+                break
+        pickup.append_integer(room_slot - 1, 2, 'little')
+        socket_ref.sendall(pickup.packet)
     finally:
         mysql.close()
         mysql_connection.close()
@@ -427,7 +438,9 @@ def use_item(**_args):
     # Offload inventory/currency side effects to async task queue to keep network thread lightweight.
     try:
         USE_ITEM_TASK_QUEUE.put_nowait({
-            'args': _args,
+            'client': _args['client'],
+            'socket': _args['socket'],
+            'server': _args['server'],
             'room': room,
             'item_type': item_type
         })
@@ -1840,6 +1853,46 @@ def chat_command(**_args):
             # If we have passed the loop with no result, the player was not found
             Lobby.chat_message(_args['client'], 'Player {0} not found'.format(who), 2)
 
+        elif command == 'autosell':
+            inventory = get_items(_args, _args['client']['character']['id'], 'inventory')
+            seen_items = {}
+            sold_items = 0
+            sold_gigas = 0
+
+            for slot, item in inventory.items():
+                if item['id'] == 0 or item['character_item_id'] is None:
+                    continue
+
+                if item['id'] not in seen_items:
+                    seen_items[item['id']] = slot
+                    continue
+
+                _args['mysql'].execute(
+                    '''SELECT `selling_price` FROM `game_items` WHERE `item_id` = %s''',
+                    [item['id']]
+                )
+                result = _args['mysql'].fetchone()
+                selling_price = 0 if result is None or result['selling_price'] is None else int(result['selling_price'])
+
+                _args['client']['character']['currency_gigas'] += selling_price
+                _args['mysql'].execute(
+                    '''UPDATE `characters` SET `currency_gigas` = (`currency_gigas` + %s) WHERE `id` = %s''',
+                    [selling_price, _args['client']['character']['id']]
+                )
+
+                remove_item(_args, item['character_item_id'], slot)
+                sold_items += 1
+                sold_gigas += selling_price
+
+            if sold_items == 0:
+                Lobby.chat_message(_args['client'], 'No duplicate items found to auto-sell.', 2)
+            else:
+                Lobby.chat_message(
+                    _args['client'],
+                    f'Auto-sold {sold_items} duplicate item(s) for {sold_gigas} gigas.',
+                    3
+                )
+
         elif command == 'help':
 
             # List of commands
@@ -1868,6 +1921,11 @@ def chat_command(**_args):
                 {
                     "command": "@stat-help",
                     "description": "Tells you more about the ability to change player's statistics in Battle modes"
+                },
+
+                {
+                    "command": "@autosell",
+                    "description": "Automatically sells duplicate items from your inventory"
                 }
             ]
 

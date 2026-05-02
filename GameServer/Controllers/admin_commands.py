@@ -165,7 +165,7 @@ def handle_admin_command(_args, command_text: str) -> bool:
             _args['client'],
             'Usage: @announce <message> | @cash <user> <amount> | @gigas <user> <amount> | @item <item_id> <user> | '
             '@itemname <name> | @exit | @win | @lose | @timeout | @timeoutdm | @speed <value> | @gauge <value> | '
-            '@reset | @kick <player> | @ban <player>',
+            '@reset | @kick <player> | @ban <player> | @clearinventory <user>',
             2,
         )
         return True
@@ -177,6 +177,7 @@ def handle_admin_command(_args, command_text: str) -> bool:
             'gigas',
             'item',
             'itemname',
+            'clearinventory',
             'exit',
             'win',
             'lose',
@@ -260,6 +261,48 @@ def handle_admin_command(_args, command_text: str) -> bool:
         Lobby.chat_message(_args['client'], f'Item matches for "{query_name}" (max 10):', 2)
         for item in found_items:
             Lobby.chat_message(_args['client'], f'@itemname {item["item_name"]} + ID {item["item_id"]}', 2)
+        return True
+
+    if action == 'clearinventory':
+        if len(parts) < 2:
+            Lobby.chat_message(_args['client'], 'Usage: @clearinventory <user>', 2)
+            return True
+
+        target_name = command_body[len(parts[0]):].strip()
+        record = _find_user_by_character(_args, target_name)
+        if record is None:
+            Lobby.chat_message(_args['client'], f'Player {target_name} was not found.', 2)
+            return True
+
+        _args['mysql'].execute(
+            '''SELECT `item_1`, `item_2`, `item_3`, `item_4`, `item_5`, `item_6`, `item_7`, `item_8`, `item_9`, `item_10`,
+                      `item_11`, `item_12`, `item_13`, `item_14`, `item_15`, `item_16`, `item_17`, `item_18`, `item_19`, `item_20`
+               FROM `inventory` WHERE `character_id` = %s''',
+            [record['character_id']]
+        )
+        inventory_row = _args['mysql'].fetchone()
+        if inventory_row is None:
+            Lobby.chat_message(_args['client'], f'Inventory for {target_name} was not found.', 2)
+            return True
+
+        item_ids = [item_id for item_id in inventory_row.values() if item_id not in [None, 0]]
+        if item_ids:
+            in_statement = ', '.join(['%s'] * len(item_ids))
+            _args['mysql'].execute(
+                f'''DELETE FROM `character_items` WHERE `id` IN ({in_statement})''',
+                item_ids
+            )
+
+        _args['mysql'].execute(
+            '''UPDATE `inventory` SET
+                `item_1`=0, `item_2`=0, `item_3`=0, `item_4`=0, `item_5`=0,
+                `item_6`=0, `item_7`=0, `item_8`=0, `item_9`=0, `item_10`=0,
+                `item_11`=0, `item_12`=0, `item_13`=0, `item_14`=0, `item_15`=0,
+                `item_16`=0, `item_17`=0, `item_18`=0, `item_19`=0, `item_20`=0
+               WHERE `character_id` = %s''',
+            [record['character_id']]
+        )
+        Lobby.chat_message(_args['client'], f'Inventory for {target_name} has been cleared.', 3)
         return True
 
     if action == 'exit':
