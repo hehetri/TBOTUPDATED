@@ -102,6 +102,7 @@ def id_request(**_args):
 
     # Add new connection to server client container
     _args['server'].clients.append(_args['client'])
+    _args['connection_handler'].update_presence(_args['client'], online=True)
 
     ''' If we have no relay client, then something is wrong. We must have a relay client.
             In this case, close our own connection. '''
@@ -278,6 +279,10 @@ We should update the last ping time
 
 def pong(**_args):
     _args['client']['last_ping'] = datetime.datetime.now()
+    if 'presence_sync' not in _args['client'] or (
+            datetime.datetime.now() - _args['client']['presence_sync']).total_seconds() >= 60:
+        _args['connection_handler'].update_presence(_args['client'], touch_only=True)
+        _args['client']['presence_sync'] = datetime.datetime.now()
 
     # Additionally, if the relay tcp client is still alive then we can update its last ping timestamp as well
     if 'relay_client' in _args['client']:

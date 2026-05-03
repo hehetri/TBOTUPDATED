@@ -5,6 +5,7 @@ __version__ = "1.0"
 
 import datetime
 import socket
+import MySQL.Interface as MySQL
 
 from GameServer.Controllers.Room import remove_slot
 from GameServer.Controllers.data.client import PING_TIMEOUT
@@ -130,6 +131,8 @@ class Handler:
 
         # Check if the current client exists in the service client container
         if client in self.server.clients:
+            # Mark user offline in presence table before we drop the socket/client state.
+            self.update_presence(client, online=False)
 
             # If the client is in a room, attempt to remove it. We'll give the system overload reason in case the
             # client has exceeded the ping timeout.
@@ -158,3 +161,36 @@ class Handler:
             # If we have a relay client, remove the game_client from it
             if 'relay_client' in client:
                 del client['relay_client']['game_client']
+
+    def update_presence(self, client, online=False, touch_only=False):
+        if 'account_id' not in client:
+            return
+
+        mysql_connection = None
+        mysql = None
+        try:
+            mysql_connection = MySQL.get_connection()
+            mysql = mysql_connection.cursor(dictionary=True, buffered=True)
+
+            # Preferred schema: users.is_online + users.last_seen
+            if touch_only:
+                mysql.execute('''UPDATE `users` SET `last_seen` = UTC_TIMESTAMP() WHERE `id` = %s''',
+                             [client['account_id']])
+            else:
+                mysql.execute(
+                    '''UPDATE `users` SET `is_online` = %s, `last_seen` = UTC_TIMESTAMP() WHERE `id` = %s''',
+                    [1 if online else 0, client['account_id']]
+                )
+        except Exception:
+            # Backward compatible fallback for databases with only last_seen.
+            try:
+                if mysql is not None:
+                    mysql.execute('''UPDATE `users` SET `last_seen` = UTC_TIMESTAMP() WHERE `id` = %s''',
+                                 [client['account_id']])
+            except Exception:
+                pass
+        finally:
+            if mysql is not None:
+                mysql.close()
+            if mysql_connection is not None:
+                mysql_connection.close()
