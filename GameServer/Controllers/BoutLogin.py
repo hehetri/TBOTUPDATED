@@ -215,25 +215,39 @@ def create_character(**_args):
         _args['socket'].sendall(packet.packet)
         return _args['connection_handler'].close_connection(_args['client'])
     else:
-        packet.append_bytes(character_create_success)
-
-        # Keep character.id aligned with users.id for this account.
-        _args['mysql'].execute('SELECT `id` FROM `characters` WHERE `id` = %s', [user['id']])
-        if _args['mysql'].rowcount > 0:
-            raise Exception('Character ID collision: users.id is already being used by another character record')
-
-        # Insert the new character in the database with id == user_id.
-        _args['mysql'].execute("""INSERT INTO `characters` (`id`, `user_id`, `name`, `type`) VALUES (%s, %s, %s, %s)""",
-                               [user['id'], user['id'], character_name, character_type])
-
-        # Retrieve character id of the character we just built and create a new wearing and inventory table for our
-        # character
         character_id = user['id']
-        _args['mysql'].execute('INSERT INTO `character_wearing` (`character_id`) VALUES (%s)', [character_id])
-        _args['mysql'].execute('INSERT INTO `inventory` (`character_id`) VALUES (%s)', [character_id])
+        mysql_connection = _args['mysql_connection']
 
-        # Send success status to the client
-        _args['socket'].sendall(packet.packet)
+        try:
+            mysql_connection.start_transaction()
+
+            # Ensure this account does not already own a character.
+            _args['mysql'].execute('SELECT `id` FROM `characters` WHERE `user_id` = %s LIMIT 1', [user['id']])
+            if _args['mysql'].rowcount > 0:
+                raise Exception('Account already has a character')
+
+            # Ensure the master ID is still free in characters.
+            _args['mysql'].execute('SELECT `id` FROM `characters` WHERE `id` = %s LIMIT 1', [character_id])
+            if _args['mysql'].rowcount > 0:
+                raise Exception('Character ID collision: users.id is already in use')
+
+            # 1 account = 1 character using users.id as master key.
+            _args['mysql'].execute(
+                """INSERT INTO `characters` (`id`, `user_id`, `name`, `type`) VALUES (%s, %s, %s, %s)""",
+                [character_id, user['id'], character_name, character_type]
+            )
+
+            _args['mysql'].execute('INSERT INTO `character_wearing` (`character_id`) VALUES (%s)', [character_id])
+            _args['mysql'].execute('INSERT INTO `inventory` (`character_id`) VALUES (%s)', [character_id])
+
+            mysql_connection.commit()
+            packet.append_bytes(character_create_success)
+            _args['socket'].sendall(packet.packet)
+        except Exception:
+            mysql_connection.rollback()
+            packet.append_bytes(character_create_name_error)
+            _args['socket'].sendall(packet.packet)
+            raise
 
 
 """
