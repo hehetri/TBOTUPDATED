@@ -217,13 +217,18 @@ def create_character(**_args):
     else:
         packet.append_bytes(character_create_success)
 
-        # Insert the new character in the database
-        _args['mysql'].execute("""INSERT INTO `characters` (`user_id`, `name`, `type`) VALUES (%s, %s, %s)""",
-                               [user['id'], character_name, character_type])
+        # Keep character.id aligned with users.id for this account.
+        _args['mysql'].execute('SELECT `id` FROM `characters` WHERE `id` = %s', [user['id']])
+        if _args['mysql'].rowcount > 0:
+            raise Exception('Character ID collision: users.id is already being used by another character record')
+
+        # Insert the new character in the database with id == user_id.
+        _args['mysql'].execute("""INSERT INTO `characters` (`id`, `user_id`, `name`, `type`) VALUES (%s, %s, %s, %s)""",
+                               [user['id'], user['id'], character_name, character_type])
 
         # Retrieve character id of the character we just built and create a new wearing and inventory table for our
         # character
-        character_id = _args['mysql'].lastrowid
+        character_id = user['id']
         _args['mysql'].execute('INSERT INTO `character_wearing` (`character_id`) VALUES (%s)', [character_id])
         _args['mysql'].execute('INSERT INTO `inventory` (`character_id`) VALUES (%s)', [character_id])
 
