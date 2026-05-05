@@ -2,7 +2,8 @@
 from typing import Callable
 
 from GameServer.Controllers import Lobby
-from GameServer.Controllers.Shop import sync_cash
+from GameServer.Controllers.Shop import sync_cash, sync_inventory
+from GameServer.Controllers.Character import add_item, get_available_inventory_slot, get_items
 
 
 ANNOUNCEMENT_PREFIXES = {'announce', 'anuncio', 'anúncio'}
@@ -19,7 +20,7 @@ def _broadcast(_args, message: str, color: int = 3):
 
 def _require_admin(_args) -> bool:
     if _args['client'].get('gm', 0) != 1:
-        Lobby.chat_message(_args['client'], 'Esse comando é apenas para administradores.', 2)
+        Lobby.chat_message(_args['client'], 'This command is only available to game masters.', 2)
         return False
     return True
 
@@ -43,7 +44,7 @@ def _notify_target(_args, target_client, message: str):
 def _apply_cash(_args, target_name: str, amount: int):
     record = _find_user_by_character(_args, target_name)
     if record is None:
-        Lobby.chat_message(_args['client'], f'Jogador {target_name} não encontrado.', 2)
+        Lobby.chat_message(_args['client'], f'Player {target_name} was not found.', 2)
         return
 
     _args['mysql'].execute('UPDATE `users` SET `cash` = (`cash` + %s) WHERE `id` = %s', [amount, record['user_id']])
@@ -54,15 +55,15 @@ def _apply_cash(_args, target_name: str, amount: int):
         target_args['client'] = target_client
         target_args['socket'] = target_client['socket']
         sync_cash(target_args)
-        _notify_target(_args, target_client, f'Você recebeu {amount} cash!')
+        _notify_target(_args, target_client, f'You received {amount} cash!')
 
-    Lobby.chat_message(_args['client'], f'{amount} cash enviado para {target_name}.', 3)
+    Lobby.chat_message(_args['client'], f'Sent {amount} cash to {target_name}.', 3)
 
 
 def _apply_gigas(_args, target_name: str, amount: int):
     record = _find_user_by_character(_args, target_name)
     if record is None:
-        Lobby.chat_message(_args['client'], f'Jogador {target_name} não encontrado.', 2)
+        Lobby.chat_message(_args['client'], f'Player {target_name} was not found.', 2)
         return
 
     _args['mysql'].execute(
@@ -73,9 +74,84 @@ def _apply_gigas(_args, target_name: str, amount: int):
     target_client = _args['connection_handler'].get_character_client(target_name)
     if target_client is not None:
         target_client['character']['currency_gigas'] = target_client['character']['currency_gigas'] + amount
-        _notify_target(_args, target_client, f'Você recebeu {amount} gigas!')
+        _notify_target(_args, target_client, f'You received {amount} gigas!')
 
-    Lobby.chat_message(_args['client'], f'{amount} gigas enviados para {target_name}.', 3)
+    Lobby.chat_message(_args['client'], f'Sent {amount} gigas to {target_name}.', 3)
+
+
+def _apply_item(_args, target_name: str, item_id: int):
+    record = _find_user_by_character(_args, target_name)
+    if record is None:
+        Lobby.chat_message(_args['client'], f'Player {target_name} was not found.', 2)
+        return
+
+    item = None
+    for column in ['name', 'item_name']:
+        try:
+            _args['mysql'].execute(
+                f'''SELECT `id`, `item_id`, `duration`, `part_type`, `{column}` AS `item_name`
+                    FROM `game_items`
+                    WHERE `item_id` = %s''',
+                [item_id]
+            )
+            item = _args['mysql'].fetchone()
+            break
+        except Exception:
+            continue
+
+    # Fallback for schemas that do not store a name column in game_items
+    if item is None:
+        _args['mysql'].execute(
+            '''SELECT `id`, `item_id`, `duration`, `part_type` FROM `game_items` WHERE `item_id` = %s''',
+            [item_id]
+        )
+        item = _args['mysql'].fetchone()
+
+    if item is None:
+        Lobby.chat_message(_args['client'], f'Item ID {item_id} was not found.', 2)
+        return
+
+    item_name = item['item_name'] if 'item_name' in item and item['item_name'] else f'ID {item_id}'
+
+    # Reuse Character.get_items to avoid mismatches with how empty slots are represented in DB (NULL vs 0).
+    inventory = get_items(_args, record['character_id'], 'inventory')
+    available_slot = get_available_inventory_slot(inventory)
+    if available_slot is None:
+        Lobby.chat_message(_args['client'], f'{target_name} has a full inventory.', 2)
+        return
+
+    target_args = dict(_args)
+    target_args['client'] = {'character': {'id': record['character_id']}}
+    add_item(target_args, item, available_slot)
+
+    target_client = _args['connection_handler'].get_character_client(target_name)
+    if target_client is not None:
+        sync_args = dict(_args)
+        sync_args['client'] = target_client
+        sync_args['socket'] = target_client['socket']
+        sync_inventory(sync_args)
+        _notify_target(_args, target_client, f'You received item: {item_name}.')
+
+    Lobby.chat_message(_args['client'], f'Sent item "{item_name}" to {target_name}.', 3)
+
+
+def _find_items_by_name(_args, item_name: str):
+    # Some databases store the display name as `name`, others as `item_name`.
+    for column in ['name', 'item_name']:
+        try:
+            _args['mysql'].execute(
+                f'''SELECT `item_id`, `{column}` AS `item_name`
+                    FROM `game_items`
+                    WHERE `{column}` LIKE %s
+                    ORDER BY `item_id` ASC
+                    LIMIT 10''',
+                [f'%{item_name}%']
+            )
+            return _args['mysql'].fetchall()
+        except Exception:
+            continue
+
+    return None
 
 
 def handle_admin_command(_args, command_text: str) -> bool:
@@ -87,8 +163,9 @@ def handle_admin_command(_args, command_text: str) -> bool:
     if not parts:
         Lobby.chat_message(
             _args['client'],
-            'Uso: @announce <mensagem> | @cash <user> <quantia> | @gigas <user> <quantia> | @exit | @win | @lose | @timeout | '
-            '@timeoutdm | @speed <valor> | @gauge <valor> | @reset | @kick <jogador> | @ban <jogador>',
+            'Usage: @announce <message> | @cash <user> <amount> | @gigas <user> <amount> | @item <item_id> <user> | '
+            '@itemname <name> | @exit | @win | @lose | @timeout | @timeoutdm | @speed <value> | @gauge <value> | '
+            '@reset | @kick <player> | @ban <player> | @clearinventory <user>',
             2,
         )
         return True
@@ -98,6 +175,9 @@ def handle_admin_command(_args, command_text: str) -> bool:
         {
             'cash',
             'gigas',
+            'item',
+            'itemname',
+            'clearinventory',
             'exit',
             'win',
             'lose',
@@ -120,22 +200,22 @@ def handle_admin_command(_args, command_text: str) -> bool:
     if action in ANNOUNCEMENT_PREFIXES:
         announcement = command_body[len(parts[0]):].strip()
         if not announcement:
-            Lobby.chat_message(_args['client'], 'Uso: @announce <mensagem>', 2)
+            Lobby.chat_message(_args['client'], 'Usage: @announce <message>', 2)
             return True
-        _broadcast(_args, f'[Anúncio] {announcement}', 3)
+        _broadcast(_args, f'[Announcement] {announcement}', 3)
         return True
 
     if action in ['cash', 'gigas']:
         if len(parts) < 3:
-            Lobby.chat_message(_args['client'], f'Uso: @{action} <usuario> <quantia>', 2)
+            Lobby.chat_message(_args['client'], f'Usage: @{action} <user> <amount>', 2)
             return True
         target_name, amount_raw = parts[1], parts[2]
         if not amount_raw.isdigit():
-            Lobby.chat_message(_args['client'], 'A quantia deve ser um número inteiro positivo.', 2)
+            Lobby.chat_message(_args['client'], 'Amount must be a positive integer.', 2)
             return True
         amount = int(amount_raw)
         if amount <= 0:
-            Lobby.chat_message(_args['client'], 'A quantia deve ser maior que zero.', 2)
+            Lobby.chat_message(_args['client'], 'Amount must be greater than zero.', 2)
             return True
 
         handlers: dict[str, Callable] = {
@@ -145,12 +225,92 @@ def handle_admin_command(_args, command_text: str) -> bool:
         handlers[action](_args, target_name, amount)
         return True
 
+    if action == 'item':
+        if len(parts) < 3:
+            Lobby.chat_message(_args['client'], 'Usage: @item <item_id> <user>', 2)
+            return True
+
+        item_raw, target_name = parts[1], parts[2]
+        if not item_raw.isdigit():
+            Lobby.chat_message(_args['client'], 'Item ID must be a positive integer.', 2)
+            return True
+
+        item_id = int(item_raw)
+        if item_id <= 0:
+            Lobby.chat_message(_args['client'], 'Item ID must be greater than zero.', 2)
+            return True
+
+        _apply_item(_args, target_name, item_id)
+        return True
+
+    if action == 'itemname':
+        query_name = command_body[len(parts[0]):].strip()
+        if not query_name:
+            Lobby.chat_message(_args['client'], 'Usage: @itemname <name>', 2)
+            return True
+
+        found_items = _find_items_by_name(_args, query_name)
+        if found_items is None:
+            Lobby.chat_message(_args['client'], 'This database does not expose an item name column in game_items.', 2)
+            return True
+
+        if len(found_items) == 0:
+            Lobby.chat_message(_args['client'], f'No item found for "{query_name}".', 2)
+            return True
+
+        Lobby.chat_message(_args['client'], f'Item matches for "{query_name}" (max 10):', 2)
+        for item in found_items:
+            Lobby.chat_message(_args['client'], f'@itemname {item["item_name"]} + ID {item["item_id"]}', 2)
+        return True
+
+    if action == 'clearinventory':
+        if len(parts) < 2:
+            Lobby.chat_message(_args['client'], 'Usage: @clearinventory <user>', 2)
+            return True
+
+        target_name = command_body[len(parts[0]):].strip()
+        record = _find_user_by_character(_args, target_name)
+        if record is None:
+            Lobby.chat_message(_args['client'], f'Player {target_name} was not found.', 2)
+            return True
+
+        _args['mysql'].execute(
+            '''SELECT `item_1`, `item_2`, `item_3`, `item_4`, `item_5`, `item_6`, `item_7`, `item_8`, `item_9`, `item_10`,
+                      `item_11`, `item_12`, `item_13`, `item_14`, `item_15`, `item_16`, `item_17`, `item_18`, `item_19`, `item_20`
+               FROM `inventory` WHERE `character_id` = %s''',
+            [record['character_id']]
+        )
+        inventory_row = _args['mysql'].fetchone()
+        if inventory_row is None:
+            Lobby.chat_message(_args['client'], f'Inventory for {target_name} was not found.', 2)
+            return True
+
+        item_ids = [item_id for item_id in inventory_row.values() if item_id not in [None, 0]]
+        if item_ids:
+            in_statement = ', '.join(['%s'] * len(item_ids))
+            _args['mysql'].execute(
+                f'''DELETE FROM `character_items` WHERE `id` IN ({in_statement})''',
+                item_ids
+            )
+
+        _args['mysql'].execute(
+            '''UPDATE `inventory` SET
+                `item_1`=0, `item_2`=0, `item_3`=0, `item_4`=0, `item_5`=0,
+                `item_6`=0, `item_7`=0, `item_8`=0, `item_9`=0, `item_10`=0,
+                `item_11`=0, `item_12`=0, `item_13`=0, `item_14`=0, `item_15`=0,
+                `item_16`=0, `item_17`=0, `item_18`=0, `item_19`=0, `item_20`=0
+               WHERE `character_id` = %s''',
+            [record['character_id']]
+        )
+        Lobby.chat_message(_args['client'], f'Inventory for {target_name} has been cleared.', 3)
+        return True
+
     if action == 'exit':
         from GameServer.Controllers import Room
 
         room = Room.get_room(_args)
         if not room:
-            Lobby.chat_message(_args['client'], 'Você não está em uma sala.', 2)
+            Lobby.chat_message(_args['client'], 'You are not inside a room.', 2)
             return True
         Room.remove_slot(_args, room['id'], _args['client'])
         return True
@@ -162,7 +322,7 @@ def handle_admin_command(_args, command_text: str) -> bool:
 
         room = Room.get_room(_args)
         if not room:
-            Lobby.chat_message(_args['client'], 'Você precisa estar em uma sala para usar este comando.', 2)
+            Lobby.chat_message(_args['client'], 'You must be inside a room to use this command.', 2)
             return True
 
         status_map = {
@@ -173,7 +333,7 @@ def handle_admin_command(_args, command_text: str) -> bool:
         }
 
         if action == 'timeoutdm' and room['game_type'] not in [MODE_DEATHMATCH, MODE_BATTLE, MODE_TEAM_BATTLE]:
-            Lobby.chat_message(_args['client'], 'Timeout DM só pode ser usado em modos de batalha.', 2)
+            Lobby.chat_message(_args['client'], 'Timeout DM can only be used in battle modes.', 2)
             return True
 
         game_end(_args=_args, room=room, status=status_map[action])
@@ -186,26 +346,26 @@ def handle_admin_command(_args, command_text: str) -> bool:
 
         room = Room.get_room(_args)
         if not room:
-            Lobby.chat_message(_args['client'], 'Você precisa estar em uma sala para usar este comando.', 2)
+            Lobby.chat_message(_args['client'], 'You must be inside a room to use this command.', 2)
             return True
 
         if room['game_type'] not in [MODE_DEATHMATCH, MODE_BATTLE, MODE_TEAM_BATTLE]:
             Lobby.chat_message(
                 _args['client'],
-                'Estatísticas só podem ser alteradas em Death-match, Battle ou Team Battle.',
+                'Statistics can only be changed in Death-match, Battle, or Team Battle.',
                 2,
             )
             return True
 
         if room['status'] != 0:
-            Lobby.chat_message(_args['client'], 'As estatísticas só podem ser alteradas antes do início da partida.', 2)
+            Lobby.chat_message(_args['client'], 'Statistics can only be changed before the match starts.', 2)
             return True
 
         if action == 'reset':
             room['stat_override'] = {}
             message = Lobby.chat_message(
                 target=None,
-                message=f"{_args['client']['character']['name']} resetou as estatísticas personalizadas.",
+                message=f"{_args['client']['character']['name']} reset custom statistics.",
                 color=3,
                 return_packet=True,
             )
@@ -213,16 +373,16 @@ def handle_admin_command(_args, command_text: str) -> bool:
             return True
 
         if len(parts) != 2:
-            Lobby.chat_message(_args['client'], f'Uso: @{action} <número>', 2)
+            Lobby.chat_message(_args['client'], f'Usage: @{action} <number>', 2)
             return True
 
         value = parts[1]
         if not value.isdigit():
-            Lobby.chat_message(_args['client'], 'O valor deve ser um número inteiro.', 2)
+            Lobby.chat_message(_args['client'], 'Value must be an integer.', 2)
             return True
 
         if int(value) not in range(200, 8000):
-            Lobby.chat_message(_args['client'], 'O valor deve estar entre 200 e 8000.', 2)
+            Lobby.chat_message(_args['client'], 'Value must be between 200 and 8000.', 2)
             return True
 
         value_map = {
@@ -233,7 +393,7 @@ def handle_admin_command(_args, command_text: str) -> bool:
         room['stat_override'][value_map[action][STAT_KEY]] = int(value)
         message = Lobby.chat_message(
             target=None,
-            message=f"{_args['client']['character']['name']} alterou {action} de todos para {value}.",
+            message=f"{_args['client']['character']['name']} changed everyone's {action} to {value}.",
             color=3,
             return_packet=True,
         )
@@ -244,17 +404,17 @@ def handle_admin_command(_args, command_text: str) -> bool:
         from GameServer.Controllers import Room
 
         if len(parts) < 2:
-            Lobby.chat_message(_args['client'], 'Uso: @kick <jogador>', 2)
+            Lobby.chat_message(_args['client'], 'Usage: @kick <player>', 2)
             return True
 
         room = Room.get_room(_args)
         if not room:
-            Lobby.chat_message(_args['client'], 'Você precisa estar em uma sala para usar este comando.', 2)
+            Lobby.chat_message(_args['client'], 'You must be inside a room to use this command.', 2)
             return True
 
         target_name = command_body[len(parts[0]):].strip()
         if not target_name:
-            Lobby.chat_message(_args['client'], 'Uso: @kick <jogador>', 2)
+            Lobby.chat_message(_args['client'], 'Usage: @kick <player>', 2)
             return True
 
         for _, slot in room['slots'].items():
@@ -262,34 +422,33 @@ def handle_admin_command(_args, command_text: str) -> bool:
                 Room.remove_slot(_args, room['id'], slot['client'], 2)
                 return True
 
-        Lobby.chat_message(_args['client'], f'Jogador {target_name} não encontrado na sala.', 2)
+        Lobby.chat_message(_args['client'], f'Player {target_name} was not found in this room.', 2)
         return True
 
     if action == 'ban':
         if len(parts) < 2:
-            Lobby.chat_message(_args['client'], 'Uso: @ban <jogador>', 2)
+            Lobby.chat_message(_args['client'], 'Usage: @ban <player>', 2)
             return True
 
         target_name = command_body[len(parts[0]):].strip()
         if not target_name:
-            Lobby.chat_message(_args['client'], 'Uso: @ban <jogador>', 2)
+            Lobby.chat_message(_args['client'], 'Usage: @ban <player>', 2)
             return True
 
         record = _find_user_by_character(_args, target_name)
         if record is None:
-            Lobby.chat_message(_args['client'], f'Jogador {target_name} não encontrado.', 2)
+            Lobby.chat_message(_args['client'], f'Player {target_name} was not found.', 2)
             return True
 
         _args['mysql'].execute('UPDATE `users` SET `suspended` = 1 WHERE `id` = %s', [record['user_id']])
 
         target_client = _args['connection_handler'].get_character_client(target_name)
         if target_client is not None:
-            Lobby.chat_message(target_client, 'Você foi banido pelo administrador.', 2)
+            Lobby.chat_message(target_client, 'You were banned by a game master.', 2)
             _args['connection_handler'].update_player_status(target_client, 2)
 
-        Lobby.chat_message(_args['client'], f'{target_name} foi banido.', 3)
+        Lobby.chat_message(_args['client'], f'{target_name} was banned.', 3)
         return True
 
-    Lobby.chat_message(_args['client'], 'Comando administrativo desconhecido.', 2)
+    Lobby.chat_message(_args['client'], 'Unknown administrative command.', 2)
     return True
-
