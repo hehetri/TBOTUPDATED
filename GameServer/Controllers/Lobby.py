@@ -69,6 +69,14 @@ def chat(**_args):
     if message_body.startswith('@') and handle_admin_command(_args, message_body):
         return
 
+    if message_body.startswith('@'):
+        command = message_body[1:].strip().lower()
+        if command == 'help':
+            chat_message(target=_args['client'], message='Available commands in lobby:', color=2)
+            chat_message(target=_args['client'], message='@help -- show this command list', color=2)
+            chat_message(target=_args['client'], message='@announce/@cash/@gigas/@item -- game master only', color=2)
+            return
+
     # If the message is a guild chat, send the message to all members in the user's guild
     if int(message_type) == 5:
         return Guild.chat(_args, message)
@@ -251,12 +259,15 @@ def get_lobby(**_args):
 
         event_flags = _args['client'].setdefault('event_notified', set())
         if _christmas_event_active() and 'christmas' not in event_flags:
-            chat_message(_args['client'], '[Evento] Evento de Natal ativo! Procure por surpresas especiais.', 3)
+            chat_message(_args['client'], '[Event] Christmas event is active! Look for special surprises.', 3)
             event_flags.add('christmas')
 
         if _weekend_event_active() and 'weekend' not in event_flags:
-            chat_message(_args['client'], '[Evento] Evento semanal ativo! Ganhe 50% de EXP extra em planeta.', 3)
+            chat_message(_args['client'], '[Event] Weekly event is active! Gain 50% extra EXP in planet mode.', 3)
             event_flags.add('weekend')
+
+        # Show useful command hints for regular players in the lobby.
+        chat_message(_args['client'], '[Tip] Type @help to see lobby commands.', 2)
 
         # Update client status
         _args['client']['new'] = False

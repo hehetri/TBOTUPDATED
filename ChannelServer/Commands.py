@@ -10,8 +10,14 @@ This method will execute a command based on the received command ID
 """
 
 
+def unknown(**_args):
+    print('[ChannelServer] Unknown command ID', _args['packet'].id)
+
+
+PACKET_HANDLERS = {
+    'fa2a': Channels.get_channels
+}
+
+
 def execute(server, address, packet, game_server):
-    if packet.id == 'fa2a':
-        Channels.get_channels(server, address, packet, game_server)
-    else:
-        print('[ChannelServer] Unknown command ID', packet.id)
+    PACKET_HANDLERS.get(packet.id, unknown)(**locals())
