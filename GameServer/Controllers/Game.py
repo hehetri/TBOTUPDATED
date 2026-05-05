@@ -24,6 +24,7 @@ from GameServer.Controllers.data.military import MILITARY_BASE
 from GameServer.Controllers.data.planet import PLANET_MAP_TABLE, PLANET_BOXES, PLANET_BOX_MOBS, PLANET_DROPS, \
     PLANET_ASSISTS, PLANET_CANISTER_EXCEPTIONS
 from GameServer.Controllers.handlers import moderation
+from GameServer.Controllers import TransformationService
 from Packet.Write import Write as PacketWrite
 
 """
@@ -726,6 +727,15 @@ def set_score(**_args):
     # Retrieve score from the packet and set the score
     score = int(_args['packet'].read_integer(0, 2, 'little')) - 200
     room['slots'][str(room_slot)]['points'] = score
+
+    # Track transformation gauge server-side if present in packet payload.
+    if len(_args['packet'].data) >= 4:
+        gauge_value = int(_args['packet'].read_integer(2, 2, 'little'))
+        room['slots'][str(room_slot)]['transformation_gauge'] = max(0, min(100, gauge_value))
+
+    # Optional transform trigger flag from client payload.
+    if len(_args['packet'].data) >= 7 and _args['packet'].get_byte(6) == 1:
+        TransformationService.activate_transformation(_args)
 
 
 '''
@@ -1975,6 +1985,10 @@ def chat_command(**_args):
             # If we have passed the loop with no result, the player was not found
             Lobby.chat_message(_args['client'], 'Player {0} not found'.format(who), 2)
 
+        elif command == 'transform':
+            if not TransformationService.activate_transformation(_args):
+                Lobby.chat_message(_args['client'], 'Transformation rejected by server validation.', 2)
+
         elif command == 'autosell':
             inventory = get_items(_args, _args['client']['character']['id'], 'inventory')
             seen_items = {}
@@ -2048,6 +2062,11 @@ def chat_command(**_args):
                 {
                     "command": "@autosell",
                     "description": "Automatically sells duplicate items from your inventory"
+                },
+
+                {
+                    "command": "@transform",
+                    "description": "Requests transformation with server-side validation"
                 }
             ]
 
