@@ -5,11 +5,9 @@ from GameServer.Controllers import Lobby, Room
 from GameServer.Controllers.Character import get_items
 from Packet.Write import Write as PacketWrite
 
-# Keep this map easy to migrate to DB later.
-TRANSFORMATION_SETS = {
-    1: {"head": 1001, "body": 1002, "arm": 1003},
-    2: {"head": 2001, "body": 2002, "arm": 2003},
-}
+# Loaded from DB/client metadata; do not hardcode fake IDs.
+TRANSFORMATION_SETS = {}
+TRANSFORMATION_SETS_LOADED = False
 
 TRANSFORM_GAUGE_FULL = 100
 
@@ -19,8 +17,49 @@ def get_equipped_transformation_parts(_args):
 
     head = next((item['id'] for item in wearing.values() if item['type'] == 'head' and item['id'] != 0), 0)
     body = next((item['id'] for item in wearing.values() if item['type'] == 'body' and item['id'] != 0), 0)
+    # Project uses 'arms' in Character types.
     arm = next((item['id'] for item in wearing.values() if item['type'] == 'arms' and item['id'] != 0), 0)
     return head, body, arm
+
+
+def load_transformation_sets(_args):
+    global TRANSFORMATION_SETS_LOADED
+    if TRANSFORMATION_SETS_LOADED:
+        return
+
+    mysql = _args.get('mysql')
+    if mysql is None:
+        return
+
+    # Try known schema variants. Uses only IDs found in DB.
+    candidates = [
+        ("SELECT `transformation_id`, `head_item_id`, `body_item_id`, `arm_item_id` FROM `transformation_sets`",
+         ('transformation_id', 'head_item_id', 'body_item_id', 'arm_item_id')),
+        ("SELECT `id`, `head_id`, `body_id`, `arms_id` FROM `game_transformations`",
+         ('id', 'head_id', 'body_id', 'arms_id')),
+        ("SELECT `id`, `head`, `body`, `arm` FROM `character_id_map`",
+         ('id', 'head', 'body', 'arm')),
+    ]
+
+    for query, cols in candidates:
+        try:
+            mysql.execute(query)
+            rows = mysql.fetchall()
+            loaded = 0
+            for row in rows:
+                tid, h, b, a = row[cols[0]], row[cols[1]], row[cols[2]], row[cols[3]]
+                if all([tid, h, b, a]):
+                    TRANSFORMATION_SETS[int(tid)] = {"head": int(h), "body": int(b), "arm": int(a)}
+                    loaded += 1
+            if loaded > 0:
+                print(f"[Transform] loaded {loaded} transformation set(s) from DB.")
+                TRANSFORMATION_SETS_LOADED = True
+                return
+        except Exception:
+            continue
+
+    TRANSFORMATION_SETS_LOADED = True
+    print('[Transform] no complete transformation mapping table found. Sets remain empty.')
 
 
 def resolve_transformation_id(head_id, body_id, arm_id):
@@ -39,6 +78,7 @@ def can_transform(_args, room):
 
 
 def activate_transformation(_args):
+    load_transformation_sets(_args)
     room = Room.get_room(_args)
     if not room:
         return False
