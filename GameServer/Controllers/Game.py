@@ -24,6 +24,97 @@ from GameServer.Controllers.data.planet import PLANET_MAP_TABLE, PLANET_BOXES, P
 from GameServer.Controllers.handlers import moderation
 from Packet.Write import Write as PacketWrite
 
+
+ROBOT_TRANSFORM_GAUGE_REQUIRED = 100
+ROBOT_TRANSFORM_SPAM_COOLDOWN_MS = 750
+
+
+def _robot_transform_state(slot):
+    if 'robot_transform' not in slot:
+        slot['robot_transform'] = {
+            'active': False,
+            'last_trigger_ms': 0,
+            'duration_ends_at': 0
+        }
+    return slot['robot_transform']
+
+
+def _validate_robot_equipment(wearing_items):
+    required_slots = ['head', 'body', 'arms']
+    missing = [equipment_slot for equipment_slot in required_slots
+               if wearing_items['items'][equipment_slot]['item_id'] == 0]
+
+    if len(missing) > 0:
+        return False, 'missing_required_equipment', {'missing_slots': missing}
+
+    return True, 'ok', {}
+
+
+def _sync_robot_transformation(_args, room, room_slot, active, reason):
+    packet = PacketWrite()
+    packet.add_header([0x5C, 0x2F])
+    packet.append_integer(room_slot - 1, 1, 'little')
+    packet.append_integer(1 if active else 0, 1, 'little')
+    _args['connection_handler'].room_broadcast(room['id'], packet.packet)
+    print('[RobotTransform] sync room={0} slot={1} active={2} reason={3}'.format(room['id'], room_slot, active, reason))
+
+
+def force_robot_transformation(_args, room, reason='unspecified'):
+    room_slot = Room.get_slot(_args, room)
+    slot = room['slots'][str(room_slot)]
+    state = _robot_transform_state(slot)
+    now_ms = int(time.time() * 1000)
+
+    if state['last_trigger_ms'] == now_ms:
+        print('[RobotTransform] blocked room={0} slot={1} reason=duplicate_tick'.format(room['id'], room_slot))
+        return False
+
+    if now_ms - state['last_trigger_ms'] < ROBOT_TRANSFORM_SPAM_COOLDOWN_MS:
+        print('[RobotTransform] blocked room={0} slot={1} reason=spam_cooldown'.format(room['id'], room_slot))
+        return False
+
+    wearing_items = get_items(_args, _args['client']['character']['id'], 'wearing')
+    valid_equipment, equipment_reason, details = _validate_robot_equipment(wearing_items)
+
+    if not valid_equipment:
+        state['active'] = False
+        state['last_trigger_ms'] = now_ms
+        print('[RobotTransform] blocked room={0} slot={1} reason={2} details={3}'.format(room['id'], room_slot, equipment_reason, details))
+        return False
+
+    max_gauge = _args['client']['character']['trans_guage'] + wearing_items['specifications']['effect_trans_guage']
+    if max_gauge < ROBOT_TRANSFORM_GAUGE_REQUIRED:
+        state['active'] = False
+        state['last_trigger_ms'] = now_ms
+        print('[RobotTransform] blocked room={0} slot={1} reason=insufficient_gauge current={2} required={3}'.format(room['id'], room_slot, max_gauge, ROBOT_TRANSFORM_GAUGE_REQUIRED))
+        return False
+
+    state['active'] = True
+    state['last_trigger_ms'] = now_ms
+    duration_ms = max(0, _args['client']['character']['trans_special']) * 1000
+    state['duration_ends_at'] = (now_ms + duration_ms) if duration_ms > 0 else 0
+
+    _sync_robot_transformation(_args, room, room_slot, True, reason)
+    print('[RobotTransform] success room={0} slot={1} reason={2} gauge={3} duration_ms={4}'.format(room['id'], room_slot, reason, max_gauge, duration_ms))
+    return True
+
+
+def _maintain_robot_transformation(_args, room):
+    room_slot = Room.get_slot(_args, room)
+    slot = room['slots'][str(room_slot)]
+    state = _robot_transform_state(slot)
+
+    if not state['active']:
+        return
+
+    now_ms = int(time.time() * 1000)
+    if state['duration_ends_at'] > 0 and now_ms >= state['duration_ends_at']:
+        state['active'] = False
+        state['duration_ends_at'] = 0
+        _sync_robot_transformation(_args, room, room_slot, False, 'duration_ended')
+        print('[RobotTransform] ended room={0} slot={1} reason=duration_ended'.format(room['id'], room_slot))
+
+
 """
 This controller is responsible for handling all game related actions
 """
@@ -680,6 +771,9 @@ def network_state(**_args):
     room = Room.get_room(_args)
     if not room:
         return
+
+    _maintain_robot_transformation(_args, room)
+    force_robot_transformation(_args, room, reason='network_state_tick')
 
     # Read request ID from the packet. The request ID is the aforementioned container's unique identifier.
     request_id = int(_args['packet'].read_integer(6, 2, 'little'))
