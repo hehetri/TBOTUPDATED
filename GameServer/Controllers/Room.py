@@ -583,6 +583,8 @@ def set_level(**_args):
 
     # Send server-authoritative mission list/progress for selected map to requester
     Missions.send_map_missions_packet(_args, selected_level)
+    for line in Missions.get_map_mission_summaries(_args, _args['client']['character']['id'], selected_level):
+        Lobby.chat_message(_args['client'], line, 2)
 
 
 def set_difficulty(**_args):

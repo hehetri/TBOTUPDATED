@@ -88,6 +88,23 @@ def send_map_missions_packet(_args, map_id):
     _cleanup_mysql(temp_connection)
 
 
+def get_map_mission_summaries(_args, character_id, map_id):
+    temp_connection = _ensure_mysql(_args)
+    missions = list_map_missions(_args, character_id, map_id)
+    summaries = []
+    for mission in missions:
+        summaries.append(
+            '[{0}] {1}: {2}/{3}'.format(
+                mission['mission_type'],
+                mission.get('title', mission['mission_type']),
+                mission.get('current_value', 0),
+                mission.get('target_value', 0)
+            )
+        )
+    _cleanup_mysql(temp_connection)
+    return summaries
+
+
 def upsert_progress(_args, character_id, mission_id, delta=0, force_complete=False):
     _args['mysql'].execute("""
         INSERT INTO player_mission_progress(character_id, mission_id, current_value, completed, reward_collected, updated_at)
