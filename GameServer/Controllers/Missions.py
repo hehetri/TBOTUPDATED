@@ -19,6 +19,18 @@ def _cleanup_mysql(connection):
     if connection is None:
         return
     try:
+        connection.commit()
+    except Exception:
+        pass
+
+
+def _commit_if_possible(_args):
+    if _args.get('mysql_connection') is not None:
+        try:
+            _args['mysql_connection'].commit()
+        except Exception:
+            pass
+    try:
         connection.close()
     except Exception:
         pass
@@ -158,6 +170,7 @@ def update_kill_progress(_args, room, kills=1):
             new_value = mission['current_value'] + kills
             upsert_progress(_args, character_id, mission['id'], delta=kills, force_complete=new_value >= mission['target_value'])
 
+    _commit_if_possible(_args)
     _cleanup_mysql(temp_connection)
 
 
@@ -231,6 +244,7 @@ def complete_map_missions(_args, room):
                 _grant_reward_if_available(_args, character_id, mission['id'])
 
     _cleanup_mysql(temp_connection)
+    _commit_if_possible(_args)
     return completed_notifications
 
 
