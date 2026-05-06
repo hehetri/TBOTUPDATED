@@ -1164,7 +1164,13 @@ def game_end(_args, room, status=None):
                 pass
 
     # Update mission completion state before game statistics
-    Missions.complete_map_missions(_args, room)
+    completed_notifications = Missions.complete_map_missions(_args, room)
+    if completed_notifications is not None:
+        for _, slot in room['slots'].items():
+            character_id = slot['client']['character']['id']
+            if character_id in completed_notifications:
+                for quest_name in completed_notifications[character_id]:
+                    Lobby.chat_message(slot['client'], '[QUEST CONCLUIDA] {0}'.format(quest_name), 2)
 
     # Start new thread for the game statistics
     _thread.start_new_thread(game_stats, (_args, room, status))

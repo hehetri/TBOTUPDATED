@@ -78,6 +78,8 @@ def get_map_mission_summaries(_args, character_id, map_id):
     missions = list_map_missions(_args, character_id, map_id)
     summaries = []
     for mission in missions:
+        if mission.get('completed', 0) == 1 and mission['mission_type'] != 'daily_clear':
+            continue
         summaries.append(
             '[{0}] {1}: {2}/{3}'.format(
                 mission['mission_type'],
@@ -138,7 +140,7 @@ def complete_map_missions(_args, room):
         no_death = 1 if slot.get('deaths', 0) == 0 else 0
 
         _args['mysql'].execute("""
-            SELECT m.id, m.mission_type, m.target_value, COALESCE(p.current_value,0) current_value
+            SELECT m.id, m.mission_type, m.title, m.target_value, COALESCE(p.current_value,0) current_value, COALESCE(p.completed,0) completed
             FROM missions m
             LEFT JOIN player_mission_progress p ON p.mission_id=m.id AND p.character_id=%s
             WHERE m.map_id=%s AND m.is_active=1
@@ -148,14 +150,22 @@ def complete_map_missions(_args, room):
             mtype = mission['mission_type']
             if mtype == 'clear_map' and won:
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=True)
+                if mission['completed'] == 0:
+                    completed_notifications.setdefault(character_id, []).append(mission.get('title', 'clear_map'))
             elif mtype == 'repeat_clear' and won:
                 new_val = mission['current_value'] + 1
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=new_val >= mission['target_value'])
+                if mission['completed'] == 0 and new_val >= mission['target_value']:
+                    completed_notifications.setdefault(character_id, []).append(mission.get('title', 'repeat_clear'))
             elif mtype == 'no_death_clear' and won and no_death:
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=True)
+                if mission['completed'] == 0:
+                    completed_notifications.setdefault(character_id, []).append(mission.get('title', 'no_death_clear'))
             elif mtype == 'time_clear' and won:
                 elapsed_minutes = (now - room['start_time']).total_seconds() / 60.0 if room.get('start_time') else 999
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=elapsed_minutes <= minutes_limit)
+                if mission['completed'] == 0 and elapsed_minutes <= minutes_limit:
+                    completed_notifications.setdefault(character_id, []).append(mission.get('title', 'time_clear'))
             elif mtype == 'daily_clear' and won:
                 day = _today_key()
                 _args['mysql'].execute("""
@@ -168,8 +178,11 @@ def complete_map_missions(_args, room):
                         daily_key = %s,
                         updated_at = UTC_TIMESTAMP()
                 """, [character_id, mission['id'], day, day, day, day])
+                if mission['completed'] == 0:
+                    completed_notifications.setdefault(character_id, []).append(mission.get('title', 'daily_clear'))
 
     _cleanup_mysql(temp_connection)
+    return completed_notifications
 
 
 def claim_reward(_args, mission_id):
@@ -217,3 +230,4 @@ def claim_reward_rpc(**_args):
 
     cursor.close()
     conn.close()
+    completed_notifications = {}
