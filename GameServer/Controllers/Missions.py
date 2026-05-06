@@ -67,24 +67,9 @@ def send_map_missions_packet(_args, map_id):
     temp_connection = _ensure_mysql(_args)
     character_id = _args['client']['character']['id']
     missions = list_map_missions(_args, character_id, map_id)
-
-    packet = PacketWrite()
-    packet.add_header([0x7B, 0x2F])
-    packet.append_integer(1, 2, 'little')
-    packet.append_integer(map_id, 2, 'little')
-    packet.append_integer(len(missions), 2, 'little')
-    for mission in missions:
-        packet.append_integer(mission['id'], 4, 'little')
-        packet.append_string(mission['title'], 64)
-        packet.append_string(mission['description'], 128)
-        packet.append_integer(MISSION_TYPES.index(mission['mission_type']) if mission['mission_type'] in MISSION_TYPES else 255, 1, 'little')
-        packet.append_integer(mission['target_value'], 4, 'little')
-        packet.append_integer(mission['current_value'], 4, 'little')
-        packet.append_integer(mission['completed'], 1, 'little')
-        packet.append_integer(mission['reward_collected'], 1, 'little')
-
+    # NOTE: custom mission packet disabled for compatibility with legacy clients.
+    # Mission visibility is delivered via room chat summaries in Room.set_level.
     print('[MISSIONS] map_select character_id={0} map_id={1} missions={2}'.format(character_id, map_id, len(missions)))
-    _args['socket'].sendall(packet.packet)
     _cleanup_mysql(temp_connection)
 
 
@@ -225,12 +210,6 @@ def claim_reward_rpc(**_args):
     local_args['mysql_connection'] = conn
 
     ok, reason = claim_reward(local_args, mission_id)
-
-    packet = PacketWrite()
-    packet.add_header([0x7C, 0x2F])
-    packet.append_integer(1 if ok else 0, 2, 'little')
-    packet.append_integer(mission_id, 4, 'little')
-    _args['socket'].sendall(packet.packet)
 
     print('[MISSIONS] claim_reward character_id={0} mission_id={1} ok={2} reason={3}'.format(
         _args['client']['character']['id'], mission_id, ok, reason
