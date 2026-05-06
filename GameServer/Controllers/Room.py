@@ -581,10 +581,13 @@ def set_level(**_args):
     level.append_integer(selected_level, 2, 'little')
     _args['connection_handler'].room_broadcast(_args['client']['room'], level.packet)
 
-    # Send server-authoritative mission list/progress for selected map to requester
-    Missions.send_map_missions_packet(_args, selected_level)
-    for line in Missions.get_map_mission_summaries(_args, _args['client']['character']['id'], selected_level):
-        Lobby.chat_message(_args['client'], line, 2)
+    # Strict compatibility mode: avoid sending extra mission payloads/messages to legacy clients.
+    # Keep mission tracking server-side only.
+    print('[MISSIONS] strict_compatibility=1 map_select room={0} character_id={1} map_id={2}'.format(
+        room['id'],
+        _args['client']['character']['id'],
+        selected_level
+    ))
 
 
 def set_difficulty(**_args):
