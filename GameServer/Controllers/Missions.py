@@ -106,6 +106,40 @@ def upsert_progress(_args, character_id, mission_id, delta=0, force_complete=Fal
     """, [character_id, mission_id, delta, 1 if force_complete else 0, delta, 1 if force_complete else 0])
 
 
+def _grant_reward_if_available(_args, character_id, mission_id):
+    _args['mysql'].execute("""
+        SELECT m.reward_gold, m.reward_exp, p.completed, p.reward_collected
+        FROM missions m
+        INNER JOIN player_mission_progress p ON p.mission_id = m.id
+        WHERE m.id = %s AND p.character_id = %s
+    """, [mission_id, character_id])
+    row = _args['mysql'].fetchone()
+    if row is None or row['completed'] != 1 or row['reward_collected'] == 1:
+        return False
+
+    _args['mysql'].execute("""
+        UPDATE player_mission_progress
+        SET reward_collected = 1, updated_at = UTC_TIMESTAMP()
+        WHERE character_id = %s AND mission_id = %s AND reward_collected = 0
+    """, [character_id, mission_id])
+
+    if _args['mysql'].rowcount == 0:
+        return False
+
+    _args['mysql'].execute("""
+        UPDATE characters
+        SET currency_gigas = currency_gigas + %s,
+            experience = experience + %s
+        WHERE id = %s
+    """, [row['reward_gold'], row['reward_exp'], character_id])
+
+    _args['mysql'].execute("""
+        INSERT INTO mission_reward_logs(character_id, mission_id, reward_gold, reward_exp, claimed_at)
+        VALUES (%s,%s,%s,%s,UTC_TIMESTAMP())
+    """, [character_id, mission_id, row['reward_gold'], row['reward_exp']])
+    return True
+
+
 def update_kill_progress(_args, room, kills=1):
     temp_connection = _ensure_mysql(_args)
     if room['game_type'] != 2 or room['level'] not in PLANET_MAP_TABLE:
@@ -168,15 +202,18 @@ def complete_map_missions(_args, room):
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=True)
                 if mission['completed'] == 0:
                     completed_notifications.setdefault(character_id, []).append(mission.get('title', 'clear_map'))
+                _grant_reward_if_available(_args, character_id, mission['id'])
             elif mtype == 'repeat_clear' and won:
                 new_val = mission['current_value'] + 1
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=new_val >= mission['target_value'])
                 if mission['completed'] == 0 and new_val >= mission['target_value']:
                     completed_notifications.setdefault(character_id, []).append(mission.get('title', 'repeat_clear'))
+                _grant_reward_if_available(_args, character_id, mission['id'])
             elif mtype == 'no_death_clear' and won and no_death:
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=True)
                 if mission['completed'] == 0:
                     completed_notifications.setdefault(character_id, []).append(mission.get('title', 'no_death_clear'))
+                _grant_reward_if_available(_args, character_id, mission['id'])
             elif mtype == 'daily_clear' and won:
                 day = _today_key()
                 _args['mysql'].execute("""
@@ -191,6 +228,7 @@ def complete_map_missions(_args, room):
                 """, [character_id, mission['id'], day, day, day, day])
                 if mission['completed'] == 0:
                     completed_notifications.setdefault(character_id, []).append(mission.get('title', 'daily_clear'))
+                _grant_reward_if_available(_args, character_id, mission['id'])
 
     _cleanup_mysql(temp_connection)
     return completed_notifications
