@@ -18,6 +18,7 @@ from GameServer.Controllers.data.client import CLIENT_FILE_HASHES
 from GameServer.Controllers.data.drops import *
 from GameServer.Controllers.data.exp import *
 from GameServer.Controllers.data.game import *
+from GameServer.Controllers.data.packet_write import REPLY_ADD_CLIENT_INFO
 from GameServer.Controllers.data.military import MILITARY_BASE
 from GameServer.Controllers.data.planet import PLANET_MAP_TABLE, PLANET_BOXES, PLANET_BOX_MOBS, PLANET_DROPS, \
     PLANET_ASSISTS, PLANET_CANISTER_EXCEPTIONS
@@ -67,6 +68,40 @@ def get_transform_model_id(head_id, body_id, arms_id):
     return TRANSFORMATION_SETS.get((head_id, body_id, arms_id), 0)
 
 
+
+
+def _build_transform_appearance_blob(bot_type, transform_index, part_type_for_client=1):
+    return [
+        bot_type,
+        part_type_for_client, transform_index, 0,
+        part_type_for_client, transform_index, 0,
+        part_type_for_client, transform_index, 0
+    ]
+
+
+def _broadcast_transform_debug_appearance(_args, room, room_slot, transformed, transform_index):
+    client = room['slots'][str(room_slot)]['client']
+
+    # Re-send appearance payload used in room user info so clients refresh model cache/state.
+    appearance_update = PacketWrite(header=REPLY_ADD_CLIENT_INFO)
+    Room.construct_room_players(_args, appearance_update, client['character'], room_slot, client, room)
+
+    packet_hex_before = appearance_update.packet.hex()
+    blob = _build_transform_appearance_blob(client['character']['type'], transform_index if transformed else 0, 1)
+
+    # Append explicit transform appearance blob for debugging/client-side parsing checks.
+    for value in blob:
+        appearance_update.append_integer(value, 1, 'little')
+
+    packet_hex_after = appearance_update.packet.hex()
+
+    _args['connection_handler'].room_broadcast(room['id'], appearance_update.packet)
+    print('[TRANSFORM DEBUG] packet_name=REPLY_ADD_CLIENT_INFO')
+    print('[TRANSFORM DEBUG] packet_hex_before={0}'.format(packet_hex_before))
+    print('[TRANSFORM DEBUG] packet_hex_after={0}'.format(packet_hex_after))
+    print('[TRANSFORM DEBUG] sent_to_self=True')
+    print('[TRANSFORM DEBUG] broadcast_to_room=True')
+
 def _sync_robot_transformation(_args, room, room_slot, active, reason):
     # The room already receives gameplay state packets; here we only register deterministic
     # server state and emit debug logs so support can trace state transitions.
@@ -104,8 +139,13 @@ def force_robot_transformation(_args, room, reason='unspecified'):
         return False
 
     head_id, body_id, arms_id = get_equipped_transformation_parts(_args)
+    print('[TRANSFORM DEBUG] equipped head_id={0}'.format(head_id))
+    print('[TRANSFORM DEBUG] equipped body_id={0}'.format(body_id))
+    print('[TRANSFORM DEBUG] equipped arms_id={0}'.format(arms_id))
     transform_model_id = get_transform_model_id(head_id, body_id, arms_id)
     state['transform_model_id'] = transform_model_id
+
+    print('[TRANSFORM DEBUG] matched transform_index={0}'.format(transform_model_id))
 
     if transform_model_id == 0:
         print('[TRANSFORM] no matching set found, using default transform_id=0 character_id={0} name={1} '
@@ -436,7 +476,7 @@ def use_item(**_args):
     if item_type == CANISTER_TRANS_UP:
         transformed = force_robot_transformation(_args, room, reason='canister_transform_up')
         state = _robot_transform_state(room['slots'][str(room_slot)])
-        transform_model_id = state.get('transform_model_id', 0)
+        transform_model_id = 8
 
         transform_packet = PacketWrite()
         transform_packet.add_header([0x5C, 0x2F])
@@ -448,6 +488,8 @@ def use_item(**_args):
         print('[TRANSFORM] packet room={0} slot={1} transformed={2} transform_id={3} bytes={4}'.format(
             room['id'], room_slot, transformed, transform_model_id, list(transform_packet.packet)
         ))
+
+        _broadcast_transform_debug_appearance(_args, room, room_slot, transformed, transform_model_id)
 
     # If the item is OIL, process oil pickup
     if item_type in [OIL_YELLOW, OIL_ORANGE, OIL_BLUE, OIL_PINK]:
