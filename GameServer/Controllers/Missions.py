@@ -2,7 +2,7 @@ import datetime
 from Packet.Write import Write as PacketWrite
 from GameServer.Controllers.data.planet import PLANET_MAP_TABLE
 
-MISSION_TYPES = ['clear_map', 'kill_monsters', 'time_clear', 'repeat_clear', 'no_death_clear', 'daily_clear']
+MISSION_TYPES = ['clear_map', 'kill_monsters', 'repeat_clear', 'no_death_clear', 'daily_clear']
 
 
 def _ensure_mysql(_args):
@@ -37,7 +37,7 @@ def list_map_missions(_args, character_id, map_id):
             FROM missions m
             LEFT JOIN player_mission_progress p
               ON p.mission_id = m.id AND p.character_id = %s
-            WHERE m.map_id = %s AND m.is_active = 1
+            WHERE m.map_id = %s AND m.is_active = 1 AND m.mission_type != 'time_clear'
             ORDER BY m.id ASC
         """, [character_id, map_id])
         return _args['mysql'].fetchall()
@@ -53,7 +53,7 @@ def list_map_missions(_args, character_id, map_id):
             FROM missions m
             LEFT JOIN player_mission_progress p
               ON p.mission_id = m.id AND p.character_id = %s
-            WHERE m.map_id = %s AND m.is_active = 1
+            WHERE m.map_id = %s AND m.is_active = 1 AND m.mission_type != 'time_clear'
             ORDER BY m.id ASC
         """, [character_id, map_id])
         rows = _args['mysql'].fetchall()
@@ -83,9 +83,8 @@ def get_map_mission_summaries(_args, character_id, map_id):
             has_completed = True
             continue
         summaries.append(
-            '[PENDING] [{0}] {1}: {2}/{3}'.format(
-                mission['mission_type'],
-                mission.get('title', mission['mission_type']),
+            '[PENDING] {0} ({1}/{2})'.format(
+                mission.get('description', mission.get('title', mission['mission_type'])),
                 mission.get('current_value', 0),
                 mission.get('target_value', 0)
             )
@@ -134,8 +133,6 @@ def complete_map_missions(_args, room):
         _cleanup_mysql(temp_connection)
         return
 
-    minutes_limit = PLANET_MAP_TABLE[room['level']][1]
-    now = datetime.datetime.utcnow()
     completed_notifications = {}
 
     for _, slot in room['slots'].items():
@@ -149,7 +146,7 @@ def complete_map_missions(_args, room):
                 SELECT m.id, m.mission_type, m.title, m.target_value, COALESCE(p.current_value,0) current_value, COALESCE(p.completed,0) completed
                 FROM missions m
                 LEFT JOIN player_mission_progress p ON p.mission_id=m.id AND p.character_id=%s
-                WHERE m.map_id=%s AND m.is_active=1
+                WHERE m.map_id=%s AND m.is_active=1 AND m.mission_type != 'time_clear'
             """, [character_id, room['level']])
             missions = _args['mysql'].fetchall()
         except Exception as e:
@@ -159,7 +156,7 @@ def complete_map_missions(_args, room):
                 SELECT m.id, m.mission_type, m.target_value, COALESCE(p.current_value,0) current_value, COALESCE(p.completed,0) completed
                 FROM missions m
                 LEFT JOIN player_mission_progress p ON p.mission_id=m.id AND p.character_id=%s
-                WHERE m.map_id=%s AND m.is_active=1
+                WHERE m.map_id=%s AND m.is_active=1 AND m.mission_type != 'time_clear'
             """, [character_id, room['level']])
             missions = _args['mysql'].fetchall()
             for mission in missions:
@@ -180,11 +177,6 @@ def complete_map_missions(_args, room):
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=True)
                 if mission['completed'] == 0:
                     completed_notifications.setdefault(character_id, []).append(mission.get('title', 'no_death_clear'))
-            elif mtype == 'time_clear' and won:
-                elapsed_minutes = (now - room['start_time']).total_seconds() / 60.0 if room.get('start_time') else 999
-                upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=elapsed_minutes <= minutes_limit)
-                if mission['completed'] == 0 and elapsed_minutes <= minutes_limit:
-                    completed_notifications.setdefault(character_id, []).append(mission.get('title', 'time_clear'))
             elif mtype == 'daily_clear' and won:
                 day = _today_key()
                 _args['mysql'].execute("""

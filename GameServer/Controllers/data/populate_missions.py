@@ -27,18 +27,18 @@ def run():
 
         map_name = mission_meta['map_name']
         mission_rows = mission_meta['missions']
-        type_order = ['clear_map', 'kill_monsters', 'time_clear', 'repeat_clear', 'no_death_clear', 'daily_clear']
+        type_order = ['clear_map', 'kill_monsters', 'repeat_clear', 'no_death_clear', 'daily_clear']
 
         # target defaults; parser from description for kills/time
-        targets = [1, 1, 1, 3, 1, 1]
+        targets = [1, 1, 3, 1, 1]
         try:
             targets[1] = int(mission_rows[1][1].split('Defeat ')[1].split(' monsters')[0])
-            targets[2] = int(float(mission_rows[2][1].split('within ')[1].split(' minutes')[0]) * 60)
         except Exception:
             pass
 
         for idx, mtype in enumerate(type_order):
-            title, desc = mission_rows[idx]
+            source_idx = idx if idx < 2 else idx + 1  # skip time_challenge mission text
+            title, desc = mission_rows[source_idx]
             if has_title_columns:
                 cur.execute('''
                     INSERT INTO missions(map_id, mission_type, title, description, target_value, reward_gold, reward_exp, is_active)
