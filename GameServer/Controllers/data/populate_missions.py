@@ -1,3 +1,11 @@
+import os
+import sys
+
+# Allow running this script directly from repository root or by full path on Windows.
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 from GameServer.Controllers.data.map_missions import MAP_MISSIONS
 import MySQL.Interface as MySQL
 
