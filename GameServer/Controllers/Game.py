@@ -51,11 +51,8 @@ def _validate_robot_equipment(wearing_items):
 
 
 def _sync_robot_transformation(_args, room, room_slot, active, reason):
-    packet = PacketWrite()
-    packet.add_header([0x5C, 0x2F])
-    packet.append_integer(room_slot - 1, 1, 'little')
-    packet.append_integer(1 if active else 0, 1, 'little')
-    _args['connection_handler'].room_broadcast(room['id'], packet.packet)
+    # The room already receives gameplay state packets; here we only register deterministic
+    # server state and emit debug logs so support can trace state transitions.
     print('[RobotTransform] sync room={0} slot={1} active={2} reason={3}'.format(room['id'], room_slot, active, reason))
 
 
@@ -393,6 +390,10 @@ def use_item(**_args):
     if item_type == CANISTER_REBIRTH:
         for key, slot in room['slots'].items():
             slot['dead'] = False
+
+    # Force/validate transformation server-side when transformation canister is used
+    if item_type == CANISTER_TRANS_UP:
+        force_robot_transformation(_args, room, reason='canister_transform_up')
 
     # If the item is OIL, process oil pickup
     if item_type in [OIL_YELLOW, OIL_ORANGE, OIL_BLUE, OIL_PINK]:
@@ -773,7 +774,6 @@ def network_state(**_args):
         return
 
     _maintain_robot_transformation(_args, room)
-    force_robot_transformation(_args, room, reason='network_state_tick')
 
     # Read request ID from the packet. The request ID is the aforementioned container's unique identifier.
     request_id = int(_args['packet'].read_integer(6, 2, 'little'))
