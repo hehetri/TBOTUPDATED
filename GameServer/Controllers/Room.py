@@ -11,7 +11,7 @@ import sys
 import time
 from random import randrange
 
-from GameServer.Controllers import Character, Guild, Lobby
+from GameServer.Controllers import Character, Guild, Lobby, Missions
 from GameServer.Controllers.Game import game_end, load_finish, load_finish_thread
 from GameServer.Controllers.data.battle import BATTLE_MAP_TABLE
 from GameServer.Controllers.data.callbacks \
@@ -580,6 +580,17 @@ def set_level(**_args):
     level.append_bytes(bytearray([0x01, 0x00]))
     level.append_integer(selected_level, 2, 'little')
     _args['connection_handler'].room_broadcast(_args['client']['room'], level.packet)
+
+    # Strict compatibility mode with safe text-only mission summary (short messages).
+    # Avoid custom packets, but still show mission information to the player.
+    try:
+        mission_lines = Missions.get_map_mission_summaries(_args, _args['client']['character']['id'], selected_level)
+        Lobby.chat_message(_args['client'], '[MISSIONS] Map {0}: {1} entries'.format(selected_level, len(mission_lines)), 2)
+        for line in mission_lines[:3]:
+            color = 3 if line.startswith('[COMPLETED]') else 2
+            Lobby.chat_message(_args['client'], line[:70], color)
+    except Exception as e:
+        print('[MISSIONS] safe_summary_failed map={0} err={1}'.format(selected_level, str(e)))
 
 
 def set_difficulty(**_args):

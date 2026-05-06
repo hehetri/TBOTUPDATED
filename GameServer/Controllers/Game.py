@@ -10,7 +10,7 @@ import time
 
 import MySQL.Interface as MySQL
 from GameServer.Controllers.admin_commands import handle_admin_command
-from GameServer.Controllers import Lobby, Room, Guild
+from GameServer.Controllers import Lobby, Room, Guild, Missions
 from GameServer.Controllers.Character import get_items, add_item, get_available_inventory_slot, remove_expired_items, \
     remove_item, construct_bot_data
 from GameServer.Controllers.data.bot import *
@@ -18,11 +18,15 @@ from GameServer.Controllers.data.client import CLIENT_FILE_HASHES
 from GameServer.Controllers.data.drops import *
 from GameServer.Controllers.data.exp import *
 from GameServer.Controllers.data.game import *
+from GameServer.Controllers.data.packet_write import REPLY_ADD_CLIENT_INFO
 from GameServer.Controllers.data.military import MILITARY_BASE
 from GameServer.Controllers.data.planet import PLANET_MAP_TABLE, PLANET_BOXES, PLANET_BOX_MOBS, PLANET_DROPS, \
     PLANET_ASSISTS, PLANET_CANISTER_EXCEPTIONS
 from GameServer.Controllers.handlers import moderation
 from Packet.Write import Write as PacketWrite
+
+
+
 
 """
 This controller is responsible for handling all game related actions
@@ -249,6 +253,7 @@ def monster_kill(**_args):
 
         # Write the monster kill amount to the player data container as well
         room['player_data']['monster_kills'][str(who + 1)] = room['slots'][str(who + 1)]['monster_kills']
+        Missions.update_kill_progress(_args, room, 1)
 
     # Add the monster to the killed mob array, but only if we're in planet or military mode and if it isn't already
     # in the array
@@ -302,6 +307,10 @@ def use_item(**_args):
     if item_type == CANISTER_REBIRTH:
         for key, slot in room['slots'].items():
             slot['dead'] = False
+
+    # Force/validate transformation server-side when transformation canister is used
+    if item_type == CANISTER_TRANS_UP:
+        pass
 
     # If the item is OIL, process oil pickup
     if item_type in [OIL_YELLOW, OIL_ORANGE, OIL_BLUE, OIL_PINK]:
@@ -1001,6 +1010,14 @@ def game_end(_args, room, status=None):
                 room['slots'][slot]['client']['socket'].sendall(result.packet)
             except Exception:
                 pass
+
+    # Update mission completion state before game statistics
+    completed_notifications = Missions.complete_map_missions(_args, room)
+    if completed_notifications is not None:
+        for _, slot in room['slots'].items():
+            character_id = slot['client']['character']['id']
+            if character_id in completed_notifications:
+                Lobby.chat_message(slot['client'], '[QUEST COMPLETED] One or more quests were completed.', 3)
 
     # Start new thread for the game statistics
     _thread.start_new_thread(game_stats, (_args, room, status))
