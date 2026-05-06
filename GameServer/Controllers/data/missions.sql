@@ -2,6 +2,8 @@ CREATE TABLE IF NOT EXISTS missions (
   id INT AUTO_INCREMENT PRIMARY KEY,
   map_id INT NOT NULL,
   mission_type VARCHAR(32) NOT NULL,
+  title VARCHAR(128) NOT NULL DEFAULT '',
+  description VARCHAR(255) NOT NULL DEFAULT '',
   target_value INT NOT NULL DEFAULT 1,
   reward_gold INT NOT NULL DEFAULT 0,
   reward_exp INT NOT NULL DEFAULT 0,

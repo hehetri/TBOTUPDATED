@@ -11,7 +11,7 @@ def _today_key():
 
 def list_map_missions(_args, character_id, map_id):
     _args['mysql'].execute("""
-        SELECT m.id, m.map_id, m.mission_type, m.target_value, m.reward_gold, m.reward_exp,
+        SELECT m.id, m.map_id, m.mission_type, m.title, m.description, m.target_value, m.reward_gold, m.reward_exp,
                COALESCE(p.current_value,0) current_value, COALESCE(p.completed,0) completed,
                COALESCE(p.reward_collected,0) reward_collected
         FROM missions m
@@ -34,6 +34,8 @@ def send_map_missions_packet(_args, map_id):
     packet.append_integer(len(missions), 2, 'little')
     for mission in missions:
         packet.append_integer(mission['id'], 4, 'little')
+        packet.append_string(mission['title'], 64)
+        packet.append_string(mission['description'], 128)
         packet.append_integer(MISSION_TYPES.index(mission['mission_type']) if mission['mission_type'] in MISSION_TYPES else 255, 1, 'little')
         packet.append_integer(mission['target_value'], 4, 'little')
         packet.append_integer(mission['current_value'], 4, 'little')
@@ -144,3 +146,28 @@ def claim_reward(_args, mission_id):
     _args['mysql'].execute("INSERT INTO mission_reward_logs(character_id, mission_id, reward_gold, reward_exp, claimed_at) VALUES (%s,%s,%s,%s,UTC_TIMESTAMP())", [character_id, mission_id, row['reward_gold'], row['reward_exp']])
     conn.commit()
     return True, 'ok'
+
+
+def claim_reward_rpc(**_args):
+    mission_id = int(_args['packet'].read_integer(2, 4, 'little'))
+    import MySQL.Interface as MySQL
+    conn = MySQL.get_connection()
+    cursor = conn.cursor(dictionary=True)
+    local_args = dict(_args)
+    local_args['mysql'] = cursor
+    local_args['mysql_connection'] = conn
+
+    ok, reason = claim_reward(local_args, mission_id)
+
+    packet = PacketWrite()
+    packet.add_header([0x7C, 0x2F])
+    packet.append_integer(1 if ok else 0, 2, 'little')
+    packet.append_integer(mission_id, 4, 'little')
+    _args['socket'].sendall(packet.packet)
+
+    print('[MISSIONS] claim_reward character_id={0} mission_id={1} ok={2} reason={3}'.format(
+        _args['client']['character']['id'], mission_id, ok, reason
+    ))
+
+    cursor.close()
+    conn.close()

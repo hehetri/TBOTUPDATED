@@ -1,6 +1,6 @@
 from GameServer.Controllers import \
     BoutLogin, Lobby, Shop, Guild, Friend, Inbox, \
-    Room, Character, Game, gifts, block, trade, myinfo
+    Room, Character, Game, gifts, block, trade, myinfo, Missions
 
 PACKET_NAME = 0
 PACKET_HANDLER = 1
@@ -98,5 +98,6 @@ PACKET_READ = {
     'a629': ('PACKET_GAME_FILE_VALIDATION', Game.file_validation, False),
     'a630': ('PACKET_GAME_STAT_VALIDATION', Game.statistic_validation, True),
     '4a2b': ('PACKET_GAME_NETWORK_STATE', Game.network_state, False),
-    '542b': ('PACKET_GAME_MILITARY_WIN', Game.military_win, False)
+    '542b': ('PACKET_GAME_MILITARY_WIN', Game.military_win, False),
+    '7c2b': ('PACKET_MISSION_CLAIM_REWARD', Missions.claim_reward_rpc, False)
 }
