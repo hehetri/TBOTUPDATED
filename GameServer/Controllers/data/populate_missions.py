@@ -13,6 +13,13 @@ import MySQL.Interface as MySQL
 def run():
     conn = MySQL.get_connection()
     cur = conn.cursor()
+    cur.execute("""
+        SELECT `COLUMN_NAME`
+        FROM `INFORMATION_SCHEMA`.`COLUMNS`
+        WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'missions'
+    """)
+    mission_columns = [row[0] for row in cur.fetchall()]
+    has_title_columns = ('title' in mission_columns and 'description' in mission_columns)
     for map_id in range(0, 49):
         mission_meta = MAP_MISSIONS.get(map_id)
         if mission_meta is None:
@@ -32,17 +39,28 @@ def run():
 
         for idx, mtype in enumerate(type_order):
             title, desc = mission_rows[idx]
-            cur.execute('''
-                INSERT INTO missions(map_id, mission_type, title, description, target_value, reward_gold, reward_exp, is_active)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,1)
-                ON DUPLICATE KEY UPDATE
-                    title=VALUES(title),
-                    description=VALUES(description),
-                    target_value=VALUES(target_value),
-                    reward_gold=VALUES(reward_gold),
-                    reward_exp=VALUES(reward_exp),
-                    is_active=1
-            ''', [map_id, mtype, title, desc, targets[idx], 100 + (idx * 20), 1000 + (map_id * 10)])
+            if has_title_columns:
+                cur.execute('''
+                    INSERT INTO missions(map_id, mission_type, title, description, target_value, reward_gold, reward_exp, is_active)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,1)
+                    ON DUPLICATE KEY UPDATE
+                        title=VALUES(title),
+                        description=VALUES(description),
+                        target_value=VALUES(target_value),
+                        reward_gold=VALUES(reward_gold),
+                        reward_exp=VALUES(reward_exp),
+                        is_active=1
+                ''', [map_id, mtype, title, desc, targets[idx], 100 + (idx * 20), 1000 + (map_id * 10)])
+            else:
+                cur.execute('''
+                    INSERT INTO missions(map_id, mission_type, target_value, reward_gold, reward_exp, is_active)
+                    VALUES (%s,%s,%s,%s,%s,1)
+                    ON DUPLICATE KEY UPDATE
+                        target_value=VALUES(target_value),
+                        reward_gold=VALUES(reward_gold),
+                        reward_exp=VALUES(reward_exp),
+                        is_active=1
+                ''', [map_id, mtype, targets[idx], 100 + (idx * 20), 1000 + (map_id * 10)])
 
     conn.commit()
     conn.close()
