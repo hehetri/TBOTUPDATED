@@ -80,27 +80,8 @@ def _build_transform_appearance_blob(bot_type, transform_index, part_type_for_cl
 
 
 def _broadcast_transform_debug_appearance(_args, room, room_slot, transformed, transform_index):
-    client = room['slots'][str(room_slot)]['client']
-
-    # Re-send appearance payload used in room user info so clients refresh model cache/state.
-    appearance_update = PacketWrite(header=REPLY_ADD_CLIENT_INFO)
-    Room.construct_room_players(_args, appearance_update, client['character'], room_slot, client, room)
-
-    packet_hex_before = appearance_update.packet.hex()
-    blob = _build_transform_appearance_blob(client['character']['type'], transform_index if transformed else 0, 1)
-
-    # Append explicit transform appearance blob for debugging/client-side parsing checks.
-    for value in blob:
-        appearance_update.append_integer(value, 1, 'little')
-
-    packet_hex_after = appearance_update.packet.hex()
-
-    _args['connection_handler'].room_broadcast(room['id'], appearance_update.packet)
-    print('[TRANSFORM DEBUG] packet_name=REPLY_ADD_CLIENT_INFO')
-    print('[TRANSFORM DEBUG] packet_hex_before={0}'.format(packet_hex_before))
-    print('[TRANSFORM DEBUG] packet_hex_after={0}'.format(packet_hex_after))
-    print('[TRANSFORM DEBUG] sent_to_self=True')
-    print('[TRANSFORM DEBUG] broadcast_to_room=True')
+    # Strict compatibility mode: do not send custom/extended appearance payloads to legacy clients.
+    print('[TRANSFORM DEBUG] strict_compatibility=1 packet_name=REPLY_ADD_CLIENT_INFO blocked')
 
 def _sync_robot_transformation(_args, room, room_slot, active, reason):
     # The room already receives gameplay state packets; here we only register deterministic
@@ -476,20 +457,9 @@ def use_item(**_args):
     # Force/validate transformation server-side when transformation canister is used
     if item_type == CANISTER_TRANS_UP:
         transformed = force_robot_transformation(_args, room, reason='canister_transform_up')
-        state = _robot_transform_state(room['slots'][str(room_slot)])
         transform_model_id = 8
-
-        transform_packet = PacketWrite()
-        transform_packet.add_header([0x5C, 0x2F])
-        transform_packet.append_integer(room_slot - 1, 1, 'little')
-        transform_packet.append_integer(1 if transformed else 0, 1, 'little')
-        transform_packet.append_integer(1, 1, 'little')  # force TRANS branch (avoid UQTRANS)
-        transform_packet.append_integer(transform_model_id, 2, 'little')
-        _args['connection_handler'].room_broadcast(room['id'], transform_packet.packet)
-        print('[TRANSFORM] packet room={0} slot={1} transformed={2} transform_id={3} bytes={4}'.format(
-            room['id'], room_slot, transformed, transform_model_id, list(transform_packet.packet)
-        ))
-
+        print('[TRANSFORM DEBUG] strict_compatibility=1 packet_name=0x5C2F blocked room={0} slot={1} transformed={2} '
+              'transform_id={3}'.format(room['id'], room_slot, transformed, transform_model_id))
         _broadcast_transform_debug_appearance(_args, room, room_slot, transformed, transform_model_id)
 
     # If the item is OIL, process oil pickup
