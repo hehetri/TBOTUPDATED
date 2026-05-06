@@ -29,17 +29,38 @@ def _today_key():
 
 
 def list_map_missions(_args, character_id, map_id):
-    _args['mysql'].execute("""
-        SELECT m.id, m.map_id, m.mission_type, m.title, m.description, m.target_value, m.reward_gold, m.reward_exp,
-               COALESCE(p.current_value,0) current_value, COALESCE(p.completed,0) completed,
-               COALESCE(p.reward_collected,0) reward_collected
-        FROM missions m
-        LEFT JOIN player_mission_progress p
-          ON p.mission_id = m.id AND p.character_id = %s
-        WHERE m.map_id = %s AND m.is_active = 1
-        ORDER BY m.id ASC
-    """, [character_id, map_id])
-    return _args['mysql'].fetchall()
+    try:
+        _args['mysql'].execute("""
+            SELECT m.id, m.map_id, m.mission_type, m.title, m.description, m.target_value, m.reward_gold, m.reward_exp,
+                   COALESCE(p.current_value,0) current_value, COALESCE(p.completed,0) completed,
+                   COALESCE(p.reward_collected,0) reward_collected
+            FROM missions m
+            LEFT JOIN player_mission_progress p
+              ON p.mission_id = m.id AND p.character_id = %s
+            WHERE m.map_id = %s AND m.is_active = 1
+            ORDER BY m.id ASC
+        """, [character_id, map_id])
+        return _args['mysql'].fetchall()
+    except Exception as e:
+        # Backward compatibility for old schema without missions.title/description
+        if 'Unknown column' not in str(e):
+            raise
+
+        _args['mysql'].execute("""
+            SELECT m.id, m.map_id, m.mission_type, m.target_value, m.reward_gold, m.reward_exp,
+                   COALESCE(p.current_value,0) current_value, COALESCE(p.completed,0) completed,
+                   COALESCE(p.reward_collected,0) reward_collected
+            FROM missions m
+            LEFT JOIN player_mission_progress p
+              ON p.mission_id = m.id AND p.character_id = %s
+            WHERE m.map_id = %s AND m.is_active = 1
+            ORDER BY m.id ASC
+        """, [character_id, map_id])
+        rows = _args['mysql'].fetchall()
+        for row in rows:
+            row['title'] = row['mission_type']
+            row['description'] = ''
+        return rows
 
 
 def send_map_missions_packet(_args, map_id):
