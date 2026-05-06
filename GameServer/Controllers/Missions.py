@@ -5,6 +5,25 @@ from GameServer.Controllers.data.planet import PLANET_MAP_TABLE
 MISSION_TYPES = ['clear_map', 'kill_monsters', 'time_clear', 'repeat_clear', 'no_death_clear', 'daily_clear']
 
 
+def _ensure_mysql(_args):
+    if _args.get('mysql') is not None:
+        return None
+
+    import MySQL.Interface as MySQL
+    connection = MySQL.get_connection()
+    _args['mysql'] = connection.cursor(dictionary=True)
+    return connection
+
+
+def _cleanup_mysql(connection):
+    if connection is None:
+        return
+    try:
+        connection.close()
+    except Exception:
+        pass
+
+
 def _today_key():
     return datetime.datetime.utcnow().strftime('%Y-%m-%d')
 
@@ -24,6 +43,7 @@ def list_map_missions(_args, character_id, map_id):
 
 
 def send_map_missions_packet(_args, map_id):
+    temp_connection = _ensure_mysql(_args)
     character_id = _args['client']['character']['id']
     missions = list_map_missions(_args, character_id, map_id)
 
@@ -44,6 +64,7 @@ def send_map_missions_packet(_args, map_id):
 
     print('[MISSIONS] map_select character_id={0} map_id={1} missions={2}'.format(character_id, map_id, len(missions)))
     _args['socket'].sendall(packet.packet)
+    _cleanup_mysql(temp_connection)
 
 
 def upsert_progress(_args, character_id, mission_id, delta=0, force_complete=False):
@@ -58,7 +79,9 @@ def upsert_progress(_args, character_id, mission_id, delta=0, force_complete=Fal
 
 
 def update_kill_progress(_args, room, kills=1):
+    temp_connection = _ensure_mysql(_args)
     if room['game_type'] != 2 or room['level'] not in PLANET_MAP_TABLE:
+        _cleanup_mysql(temp_connection)
         return
 
     for _, slot in room['slots'].items():
@@ -73,9 +96,13 @@ def update_kill_progress(_args, room, kills=1):
             new_value = mission['current_value'] + kills
             upsert_progress(_args, character_id, mission['id'], delta=kills, force_complete=new_value >= mission['target_value'])
 
+    _cleanup_mysql(temp_connection)
+
 
 def complete_map_missions(_args, room):
+    temp_connection = _ensure_mysql(_args)
     if room['game_type'] != 2 or room['level'] not in PLANET_MAP_TABLE:
+        _cleanup_mysql(temp_connection)
         return
 
     minutes_limit = PLANET_MAP_TABLE[room['level']][1]
@@ -118,6 +145,8 @@ def complete_map_missions(_args, room):
                         daily_key = %s,
                         updated_at = UTC_TIMESTAMP()
                 """, [character_id, mission['id'], day, day, day, day])
+
+    _cleanup_mysql(temp_connection)
 
 
 def claim_reward(_args, mission_id):
