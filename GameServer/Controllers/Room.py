@@ -587,7 +587,8 @@ def set_level(**_args):
         mission_lines = Missions.get_map_mission_summaries(_args, _args['client']['character']['id'], selected_level)
         Lobby.chat_message(_args['client'], '[MISSOES] Mapa {0}: {1} missoes'.format(selected_level, len(mission_lines)), 2)
         for line in mission_lines[:3]:
-            Lobby.chat_message(_args['client'], line[:70], 2)
+            color = 3 if line.startswith('[COMPLETA]') else 2
+            Lobby.chat_message(_args['client'], line[:70], color)
     except Exception as e:
         print('[MISSIONS] safe_summary_failed map={0} err={1}'.format(selected_level, str(e)))
 

@@ -78,10 +78,10 @@ def get_map_mission_summaries(_args, character_id, map_id):
     missions = list_map_missions(_args, character_id, map_id)
     summaries = []
     for mission in missions:
-        if mission.get('completed', 0) == 1 and mission['mission_type'] != 'daily_clear':
-            continue
+        prefix = '[COMPLETA]' if mission.get('completed', 0) == 1 else '[PENDENTE]'
         summaries.append(
-            '[{0}] {1}: {2}/{3}'.format(
+            '{0} [{1}] {2}: {3}/{4}'.format(
+                prefix,
                 mission['mission_type'],
                 mission.get('title', mission['mission_type']),
                 mission.get('current_value', 0),
