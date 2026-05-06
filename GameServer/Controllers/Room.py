@@ -11,7 +11,7 @@ import sys
 import time
 from random import randrange
 
-from GameServer.Controllers import Character, Guild, Lobby
+from GameServer.Controllers import Character, Guild, Lobby, Missions
 from GameServer.Controllers.Game import game_end, load_finish, load_finish_thread
 from GameServer.Controllers.data.battle import BATTLE_MAP_TABLE
 from GameServer.Controllers.data.callbacks \
@@ -580,6 +580,9 @@ def set_level(**_args):
     level.append_bytes(bytearray([0x01, 0x00]))
     level.append_integer(selected_level, 2, 'little')
     _args['connection_handler'].room_broadcast(_args['client']['room'], level.packet)
+
+    # Send server-authoritative mission list/progress for selected map to requester
+    Missions.send_map_missions_packet(_args, selected_level)
 
 
 def set_difficulty(**_args):
