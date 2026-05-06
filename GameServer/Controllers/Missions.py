@@ -139,14 +139,28 @@ def complete_map_missions(_args, room):
         won = 1 if slot.get('won') else 0
         no_death = 1 if slot.get('deaths', 0) == 0 else 0
 
-        _args['mysql'].execute("""
-            SELECT m.id, m.mission_type, m.title, m.target_value, COALESCE(p.current_value,0) current_value, COALESCE(p.completed,0) completed
-            FROM missions m
-            LEFT JOIN player_mission_progress p ON p.mission_id=m.id AND p.character_id=%s
-            WHERE m.map_id=%s AND m.is_active=1
-        """, [character_id, room['level']])
+        try:
+            _args['mysql'].execute("""
+                SELECT m.id, m.mission_type, m.title, m.target_value, COALESCE(p.current_value,0) current_value, COALESCE(p.completed,0) completed
+                FROM missions m
+                LEFT JOIN player_mission_progress p ON p.mission_id=m.id AND p.character_id=%s
+                WHERE m.map_id=%s AND m.is_active=1
+            """, [character_id, room['level']])
+            missions = _args['mysql'].fetchall()
+        except Exception as e:
+            if 'Unknown column' not in str(e):
+                raise
+            _args['mysql'].execute("""
+                SELECT m.id, m.mission_type, m.target_value, COALESCE(p.current_value,0) current_value, COALESCE(p.completed,0) completed
+                FROM missions m
+                LEFT JOIN player_mission_progress p ON p.mission_id=m.id AND p.character_id=%s
+                WHERE m.map_id=%s AND m.is_active=1
+            """, [character_id, room['level']])
+            missions = _args['mysql'].fetchall()
+            for mission in missions:
+                mission['title'] = mission['mission_type']
 
-        for mission in _args['mysql'].fetchall():
+        for mission in missions:
             mtype = mission['mission_type']
             if mtype == 'clear_map' and won:
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=True)
