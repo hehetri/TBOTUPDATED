@@ -132,6 +132,7 @@ def complete_map_missions(_args, room):
 
     minutes_limit = PLANET_MAP_TABLE[room['level']][1]
     now = datetime.datetime.utcnow()
+    completed_notifications = {}
 
     for _, slot in room['slots'].items():
         client = slot['client']
@@ -244,4 +245,3 @@ def claim_reward_rpc(**_args):
 
     cursor.close()
     conn.close()
-    completed_notifications = {}
