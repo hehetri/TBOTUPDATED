@@ -1017,8 +1017,7 @@ def game_end(_args, room, status=None):
         for _, slot in room['slots'].items():
             character_id = slot['client']['character']['id']
             if character_id in completed_notifications:
-                for quest_name in completed_notifications[character_id]:
-                    Lobby.chat_message(slot['client'], '[QUEST CONCLUIDA] {0}'.format(quest_name), 2)
+                Lobby.chat_message(slot['client'], '[QUEST COMPLETED] One or more quests were completed.', 3)
 
     # Start new thread for the game statistics
     _thread.start_new_thread(game_stats, (_args, room, status))

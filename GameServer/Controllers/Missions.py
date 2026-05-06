@@ -77,17 +77,21 @@ def get_map_mission_summaries(_args, character_id, map_id):
     temp_connection = _ensure_mysql(_args)
     missions = list_map_missions(_args, character_id, map_id)
     summaries = []
+    has_completed = False
     for mission in missions:
-        prefix = '[COMPLETA]' if mission.get('completed', 0) == 1 else '[PENDENTE]'
+        if mission.get('completed', 0) == 1:
+            has_completed = True
+            continue
         summaries.append(
-            '{0} [{1}] {2}: {3}/{4}'.format(
-                prefix,
+            '[PENDING] [{0}] {1}: {2}/{3}'.format(
                 mission['mission_type'],
                 mission.get('title', mission['mission_type']),
                 mission.get('current_value', 0),
                 mission.get('target_value', 0)
             )
         )
+    if has_completed:
+        summaries.insert(0, '[COMPLETED] You already have completed quests on this map.')
     _cleanup_mysql(temp_connection)
     return summaries
 
