@@ -136,7 +136,8 @@ def monster_kill(**_args):
         drops += [
             (CANISTER_REBIRTH, 0.02),
             (CANISTER_BOMB, 0.02),
-            (CHEST_GOLD, 0.007)
+            (CHEST_GOLD, 0.007),
+            (CHEST_GREEN, 0.004)
         ]
 
         # If the monster is a mob from which to drop boxes from, append the boxes array
@@ -354,6 +355,9 @@ def use_item(**_args):
                 6000002,
                 6000003
             ][random.randint(0, 2)]
+        elif item_type == CHEST_GREEN:
+            # Dedicated CHEST_GREEN reward item
+            item_id = 9900170
         else:
 
             # If we do not have this item type in the drop table, do nothing
