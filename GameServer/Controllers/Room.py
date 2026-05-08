@@ -795,6 +795,9 @@ def start_game(**_args):
             slot['client']['socket'].sendall(sync.packet)
             slot['client']['needs_sync'] = True
 
+    # Sync equipped items right before game start
+    sync_equipped_items(_args, room)
+
     # Run through all possible callbacks run their registration methods
     for callback in ROOM_CALLBACKS:
         getattr(sys.modules['GameServer.Controllers.data.callbacks.' + callback],
@@ -838,6 +841,9 @@ def start_game(**_args):
 
     # Send start packet to entire room
     _args['connection_handler'].room_broadcast(_args['client']['room'], start.packet)
+
+    # Sync equipped items once more after game-start packet (post-start confirmation)
+    sync_equipped_items(_args, room)
 
     # Set room status
     room['status'] = 3
@@ -1090,6 +1096,27 @@ def sync_state(_args, room):
 
             # End the game with the loss status
             game_end(_args=_args, room=room, status=0)
+
+
+def sync_equipped_items(_args, room):
+    """
+    Broadcast currently equipped head/body/arms for every slot in the room.
+    This uses the same packet shape as room-exit-shop equipment sync for client compatibility.
+    """
+    for slot_key, slot in room['slots'].items():
+        try:
+            wearing_items = Character.get_items(_args, slot['client']['character']['id'], 'wearing')
+            packet = PacketWrite(header=REPLY_ROOM_EXIT_SHOP)
+            packet.append_bytes(bytearray([0x01, 0x00]))
+            packet.append_integer(int(slot_key) - 1, 2, 'little')
+
+            for i in range(0, 3):
+                item = wearing_items['items'][list(wearing_items['items'].keys())[i]]
+                packet.append_integer(item['id'], 4, 'little')
+
+            _args['connection_handler'].room_broadcast(room['id'], packet.packet)
+        except Exception as e:
+            print('[ROOM] sync_equipped_items failed for slot={0}: {1}'.format(slot_key, str(e)))
 
 
 '''
