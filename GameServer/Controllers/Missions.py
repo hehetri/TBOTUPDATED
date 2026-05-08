@@ -1,6 +1,10 @@
 import datetime
 from Packet.Write import Write as PacketWrite
 from GameServer.Controllers.data.planet import PLANET_MAP_TABLE
+from GameServer.Controllers.data.planet import PLANET_DROPS
+from GameServer.Controllers.data.drops import CHEST_GREEN
+from GameServer.Controllers.Character import get_items, get_available_inventory_slot, add_item
+import random
 
 MISSION_TYPES = ['clear_map', 'kill_monsters', 'repeat_clear', 'no_death_clear', 'daily_clear']
 
@@ -118,7 +122,7 @@ def upsert_progress(_args, character_id, mission_id, delta=0, force_complete=Fal
     """, [character_id, mission_id, delta, 1 if force_complete else 0, delta, 1 if force_complete else 0])
 
 
-def _grant_reward_if_available(_args, character_id, mission_id):
+def _grant_reward_if_available(_args, character_id, mission_id, map_id=None):
     _args['mysql'].execute("""
         SELECT m.reward_gold, m.reward_exp, p.completed, p.reward_collected
         FROM missions m
@@ -141,14 +145,38 @@ def _grant_reward_if_available(_args, character_id, mission_id):
     _args['mysql'].execute("""
         UPDATE characters
         SET currency_gigas = currency_gigas + %s,
-            experience = experience + %s
+            experience = experience + %s,
+            currency_botstract = currency_botstract + %s
         WHERE id = %s
-    """, [row['reward_gold'], row['reward_exp'], character_id])
+    """, [row['reward_gold'], row['reward_exp'], 10, character_id])
 
     _args['mysql'].execute("""
         INSERT INTO mission_reward_logs(character_id, mission_id, reward_gold, reward_exp, claimed_at)
         VALUES (%s,%s,%s,%s,UTC_TIMESTAMP())
     """, [character_id, mission_id, row['reward_gold'], row['reward_exp']])
+
+    # Mission drop reward: grant one CHEST_GREEN reward roll if map supports it.
+    if map_id is not None and map_id in PLANET_DROPS and CHEST_GREEN in PLANET_DROPS[map_id]:
+        sc = random.random()
+        last_chance = 0.0
+        item_id = 0
+        for iid, chance in PLANET_DROPS[map_id][CHEST_GREEN]:
+            if sc <= (chance + last_chance):
+                item_id = iid
+                break
+            last_chance += chance
+
+        if item_id != 0:
+            _args['mysql'].execute(
+                '''SELECT `id`, `item_id`, `buyable`, `gold_price`, `cash_price`, `part_type`, `duration` FROM `game_items` WHERE `item_id` = %s''',
+                [item_id]
+            )
+            item = _args['mysql'].fetchone()
+            if item is not None:
+                inventory = get_items(_args, character_id, 'inventory')
+                available_slot = get_available_inventory_slot(inventory)
+                if available_slot is not None:
+                    add_item(_args, item, available_slot)
     return True
 
 
@@ -215,18 +243,18 @@ def complete_map_missions(_args, room):
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=True)
                 if mission['completed'] == 0:
                     completed_notifications.setdefault(character_id, []).append(mission.get('title', 'clear_map'))
-                _grant_reward_if_available(_args, character_id, mission['id'])
+                _grant_reward_if_available(_args, character_id, mission['id'], room['level'])
             elif mtype == 'repeat_clear' and won:
                 new_val = mission['current_value'] + 1
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=new_val >= mission['target_value'])
                 if mission['completed'] == 0 and new_val >= mission['target_value']:
                     completed_notifications.setdefault(character_id, []).append(mission.get('title', 'repeat_clear'))
-                _grant_reward_if_available(_args, character_id, mission['id'])
+                _grant_reward_if_available(_args, character_id, mission['id'], room['level'])
             elif mtype == 'no_death_clear' and won and no_death:
                 upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=True)
                 if mission['completed'] == 0:
                     completed_notifications.setdefault(character_id, []).append(mission.get('title', 'no_death_clear'))
-                _grant_reward_if_available(_args, character_id, mission['id'])
+                _grant_reward_if_available(_args, character_id, mission['id'], room['level'])
             elif mtype == 'daily_clear' and won:
                 day = _today_key()
                 _args['mysql'].execute("""
@@ -241,7 +269,7 @@ def complete_map_missions(_args, room):
                 """, [character_id, mission['id'], day, day, day, day])
                 if mission['completed'] == 0:
                     completed_notifications.setdefault(character_id, []).append(mission.get('title', 'daily_clear'))
-                _grant_reward_if_available(_args, character_id, mission['id'])
+                _grant_reward_if_available(_args, character_id, mission['id'], room['level'])
 
     _cleanup_mysql(temp_connection)
     _commit_if_possible(_args)
