@@ -795,8 +795,6 @@ def start_game(**_args):
             slot['client']['socket'].sendall(sync.packet)
             slot['client']['needs_sync'] = True
 
-    # Sync equipped items right before game start
-    sync_equipped_items(_args, room)
 
     # Run through all possible callbacks run their registration methods
     for callback in ROOM_CALLBACKS:
@@ -842,8 +840,6 @@ def start_game(**_args):
     # Send start packet to entire room
     _args['connection_handler'].room_broadcast(_args['client']['room'], start.packet)
 
-    # Sync equipped items once more after game-start packet (post-start confirmation)
-    sync_equipped_items(_args, room)
 
     # Set room status
     room['status'] = 3
