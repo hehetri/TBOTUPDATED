@@ -6,7 +6,17 @@ from GameServer.Controllers.data.drops import CHEST_GREEN
 from GameServer.Controllers.Character import get_items, get_available_inventory_slot, add_item
 import random
 
-MISSION_TYPES = ['clear_map', 'kill_monsters', 'repeat_clear', 'no_death_clear', 'daily_clear']
+MISSION_TYPES = [
+    'clear_map',
+    'kill_monsters',
+    'repeat_clear',
+    'no_death_clear',
+    'daily_clear',
+    'collect_item',
+    'deliver_item',
+    'raid_boss',
+    'event_quest'
+]
 
 
 def _ensure_mysql(_args):
