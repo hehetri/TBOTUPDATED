@@ -1,10 +1,13 @@
 import datetime
+import re
 from Packet.Write import Write as PacketWrite
 from GameServer.Controllers.data.planet import PLANET_MAP_TABLE
 from GameServer.Controllers.data.planet import PLANET_DROPS
 from GameServer.Controllers.data.drops import CHEST_GREEN
 from GameServer.Controllers.Character import get_items, get_available_inventory_slot, add_item
+from GameServer.Controllers.Character import remove_item
 import random
+from GameServer.Controllers.data.quest_item_ids import QUEST_ITEM_IDS
 
 MISSION_TYPES = [
     'clear_map',
@@ -190,6 +193,49 @@ def _grant_reward_if_available(_args, character_id, mission_id, map_id=None):
     return True
 
 
+def _extract_item_requirements(description):
+    requirements = []
+    if not description:
+        return requirements
+
+    for item_name, item_ids in QUEST_ITEM_IDS.items():
+        if item_name not in description:
+            continue
+        match = re.search(r'(\\d+)x\\s*' + re.escape(item_name), description, flags=re.IGNORECASE)
+        qty = int(match.group(1)) if match else 1
+        requirements.append((item_name, item_ids, qty))
+    return requirements
+
+
+def _validate_and_consume_mission_items(_args, character_id, mission):
+    requirements = _extract_item_requirements(mission.get('description', ''))
+    if len(requirements) == 0:
+        return True
+
+    inventory = get_items(_args, character_id, 'inventory')
+    by_item_id = {}
+    for slot, data in inventory.items():
+        by_item_id.setdefault(data['id'], []).append((slot, data))
+
+    to_consume = []
+    for _, valid_ids, qty in requirements:
+        found = []
+        for iid in valid_ids:
+            found.extend(by_item_id.get(iid, []))
+        if len(found) < qty:
+            return False
+        to_consume.extend(found[:qty])
+
+    # Consume selected inventory items (deliver-item style validation)
+    consumed = set()
+    for _, data in to_consume:
+        cid = data.get('character_item_id')
+        if cid is not None and cid not in consumed:
+            remove_item(_args, cid)
+            consumed.add(cid)
+    return True
+
+
 def update_kill_progress(_args, room, kills=1):
     temp_connection = _ensure_mysql(_args)
     if room['game_type'] != 2 or room['level'] not in PLANET_MAP_TABLE:
@@ -280,6 +326,12 @@ def complete_map_missions(_args, room):
                 if mission['completed'] == 0:
                     completed_notifications.setdefault(character_id, []).append(mission.get('title', 'daily_clear'))
                 _grant_reward_if_available(_args, character_id, mission['id'], room['level'])
+            elif mtype in ['collect_item', 'deliver_item', 'raid_boss', 'event_quest'] and won:
+                if _validate_and_consume_mission_items(_args, character_id, mission):
+                    upsert_progress(_args, character_id, mission['id'], delta=1, force_complete=True)
+                    if mission['completed'] == 0:
+                        completed_notifications.setdefault(character_id, []).append(mission.get('title', mtype))
+                    _grant_reward_if_available(_args, character_id, mission['id'], room['level'])
 
     _cleanup_mysql(temp_connection)
     _commit_if_possible(_args)
