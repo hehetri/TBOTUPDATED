@@ -255,6 +255,7 @@ def monster_kill(**_args):
         # Write the monster kill amount to the player data container as well
         room['player_data']['monster_kills'][str(who + 1)] = room['slots'][str(who + 1)]['monster_kills']
         Missions.update_kill_progress(_args, room, 1)
+        Missions.grant_quest_drop_on_kill(_args, room, who + 1)
 
     # Add the monster to the killed mob array, but only if we're in planet or military mode and if it isn't already
     # in the array

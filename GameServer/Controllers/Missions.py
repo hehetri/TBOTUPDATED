@@ -236,6 +236,65 @@ def _validate_and_consume_mission_items(_args, character_id, mission):
     return True
 
 
+def _next_required_item_for_character(_args, character_id, map_id):
+    _args['mysql'].execute("""
+        SELECT m.id, m.mission_type, m.description
+        FROM missions m
+        LEFT JOIN player_mission_progress p ON p.mission_id = m.id AND p.character_id = %s
+        WHERE m.map_id = %s AND m.is_active = 1
+          AND m.mission_type IN ('collect_item', 'deliver_item', 'raid_boss', 'event_quest')
+          AND COALESCE(p.completed, 0) = 0
+    """, [character_id, map_id])
+    missions = _args['mysql'].fetchall()
+    if len(missions) == 0:
+        return None
+
+    inventory = get_items(_args, character_id, 'inventory')
+    counts = {}
+    for _, data in inventory.items():
+        counts[data['id']] = counts.get(data['id'], 0) + 1
+
+    for mission in missions:
+        reqs = _extract_item_requirements(mission.get('description', ''))
+        for _, valid_ids, qty in reqs:
+            current = sum(counts.get(iid, 0) for iid in valid_ids)
+            if current < qty:
+                return valid_ids[0]
+    return None
+
+
+def grant_quest_drop_on_kill(_args, room, killer_slot_number):
+    if room['game_type'] != 2 or room['level'] not in PLANET_MAP_TABLE:
+        return
+    if str(killer_slot_number) not in room['slots']:
+        return
+
+    character_id = room['slots'][str(killer_slot_number)]['client']['character']['id']
+    item_id = _next_required_item_for_character(_args, character_id, room['level'])
+    if item_id is None:
+        return
+
+    # Keep rate moderate to avoid flooding.
+    if random.random() > 0.35:
+        return
+
+    _args['mysql'].execute(
+        '''SELECT `id`, `item_id`, `buyable`, `gold_price`, `cash_price`, `part_type`, `duration` FROM `game_items` WHERE `item_id` = %s''',
+        [item_id]
+    )
+    item = _args['mysql'].fetchone()
+    if item is None:
+        return
+
+    inventory = get_items(_args, character_id, 'inventory')
+    available_slot = get_available_inventory_slot(inventory)
+    if available_slot is None:
+        return
+
+    add_item(_args, item, available_slot)
+    print('[MISSIONS] quest_drop map={0} character_id={1} item_id={2}'.format(room['level'], character_id, item_id))
+
+
 def update_kill_progress(_args, room, kills=1):
     temp_connection = _ensure_mysql(_args)
     if room['game_type'] != 2 or room['level'] not in PLANET_MAP_TABLE:
