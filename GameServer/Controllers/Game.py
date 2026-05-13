@@ -10,7 +10,7 @@ import time
 
 import MySQL.Interface as MySQL
 from GameServer.Controllers.admin_commands import handle_admin_command
-from GameServer.Controllers import Lobby, Room, Guild
+from GameServer.Controllers import Lobby, Room, Guild, Missions
 from GameServer.Controllers.Character import get_items, add_item, get_available_inventory_slot, remove_expired_items, \
     remove_item, construct_bot_data
 from GameServer.Controllers.data.bot import *
@@ -18,11 +18,17 @@ from GameServer.Controllers.data.client import CLIENT_FILE_HASHES
 from GameServer.Controllers.data.drops import *
 from GameServer.Controllers.data.exp import *
 from GameServer.Controllers.data.game import *
+from GameServer.Controllers.data.packet_write import REPLY_ADD_CLIENT_INFO
 from GameServer.Controllers.data.military import MILITARY_BASE
 from GameServer.Controllers.data.planet import PLANET_MAP_TABLE, PLANET_BOXES, PLANET_BOX_MOBS, PLANET_DROPS, \
     PLANET_ASSISTS, PLANET_CANISTER_EXCEPTIONS
 from GameServer.Controllers.handlers import moderation
 from Packet.Write import Write as PacketWrite
+
+DOUBLE_XP_ITEM_IDS = [5020700, 5020701, 5020702, 5020703, 5020704]
+
+
+
 
 """
 This controller is responsible for handling all game related actions
@@ -132,7 +138,8 @@ def monster_kill(**_args):
         drops += [
             (CANISTER_REBIRTH, 0.02),
             (CANISTER_BOMB, 0.02),
-            (CHEST_GOLD, 0.007)
+            (CHEST_GOLD, 0.007),
+            (CHEST_GREEN, 0.004)
         ]
 
         # If the monster is a mob from which to drop boxes from, append the boxes array
@@ -249,6 +256,8 @@ def monster_kill(**_args):
 
         # Write the monster kill amount to the player data container as well
         room['player_data']['monster_kills'][str(who + 1)] = room['slots'][str(who + 1)]['monster_kills']
+        Missions.update_kill_progress(_args, room, 1)
+        Missions.grant_quest_drop_on_kill(_args, room, who + 1)
 
     # Add the monster to the killed mob array, but only if we're in planet or military mode and if it isn't already
     # in the array
@@ -303,6 +312,10 @@ def use_item(**_args):
         for key, slot in room['slots'].items():
             slot['dead'] = False
 
+    # Force/validate transformation server-side when transformation canister is used
+    if item_type == CANISTER_TRANS_UP:
+        pass
+
     # If the item is OIL, process oil pickup
     if item_type in [OIL_YELLOW, OIL_ORANGE, OIL_BLUE, OIL_PINK]:
         # Container for the amount of oil a player receives per type
@@ -345,6 +358,9 @@ def use_item(**_args):
                 6000002,
                 6000003
             ][random.randint(0, 2)]
+        elif item_type == CHEST_GREEN:
+            # Dedicated CHEST_GREEN reward item
+            item_id = 9900170
         else:
 
             # If we do not have this item type in the drop table, do nothing
@@ -1002,6 +1018,14 @@ def game_end(_args, room, status=None):
             except Exception:
                 pass
 
+    # Update mission completion state before game statistics
+    completed_notifications = Missions.complete_map_missions(_args, room)
+    if completed_notifications is not None:
+        for _, slot in room['slots'].items():
+            character_id = slot['client']['character']['id']
+            if character_id in completed_notifications:
+                Lobby.chat_message(slot['client'], '[QUEST COMPLETED] One or more quests were completed.', 3)
+
     # Start new thread for the game statistics
     _thread.start_new_thread(game_stats, (_args, room, status))
 
@@ -1028,6 +1052,14 @@ def post_game_transaction(_args, room, status=None):
         anti_hack_check(_args, room)
 
     information = {}
+
+    def has_active_double_xp(character_id):
+        inventory = get_items(_args, character_id, 'inventory')
+        for _, item in inventory.items():
+            if item['id'] in DOUBLE_XP_ITEM_IDS:
+                # Permanent item keeps duration=0, timed items stay present while active.
+                return True
+        return False
 
     # Calculate new experience, level, etc. for all players in the room
     for key, slot in room['slots'].items():
@@ -1118,6 +1150,10 @@ def post_game_transaction(_args, room, status=None):
 
         # Add party_experience to the addition_experience variable so that it is added to the total experience amount
         addition_experience += party_experience
+
+        # Apply DoubleXP inventory effect
+        if has_active_double_xp(character['id']):
+            addition_experience *= 2
 
         # Check if we have leveled up
         level_up = character['level'] < MAX_LEVEL and character['experience'] + addition_experience >= EXP_TABLE[character['level'] + 1]

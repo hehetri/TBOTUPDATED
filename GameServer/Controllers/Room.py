@@ -11,7 +11,7 @@ import sys
 import time
 from random import randrange
 
-from GameServer.Controllers import Character, Guild, Lobby
+from GameServer.Controllers import Character, Guild, Lobby, Missions
 from GameServer.Controllers.Game import game_end, load_finish, load_finish_thread
 from GameServer.Controllers.data.battle import BATTLE_MAP_TABLE
 from GameServer.Controllers.data.callbacks \
@@ -581,6 +581,17 @@ def set_level(**_args):
     level.append_integer(selected_level, 2, 'little')
     _args['connection_handler'].room_broadcast(_args['client']['room'], level.packet)
 
+    # Strict compatibility mode with safe text-only mission summary (short messages).
+    # Avoid custom packets, but still show mission information to the player.
+    try:
+        mission_lines = Missions.get_map_mission_summaries(_args, _args['client']['character']['id'], selected_level)
+        Lobby.chat_message(_args['client'], '[MISSIONS] Map {0}: {1} entries'.format(selected_level, len(mission_lines)), 2)
+        for line in mission_lines[:3]:
+            color = 3 if line.startswith('[COMPLETED]') else 2
+            Lobby.chat_message(_args['client'], line[:70], color)
+    except Exception as e:
+        print('[MISSIONS] safe_summary_failed map={0} err={1}'.format(selected_level, str(e)))
+
 
 def set_difficulty(**_args):
     # Retrieve the room we are currently in.
@@ -784,6 +795,7 @@ def start_game(**_args):
             slot['client']['socket'].sendall(sync.packet)
             slot['client']['needs_sync'] = True
 
+
     # Run through all possible callbacks run their registration methods
     for callback in ROOM_CALLBACKS:
         getattr(sys.modules['GameServer.Controllers.data.callbacks.' + callback],
@@ -827,6 +839,7 @@ def start_game(**_args):
 
     # Send start packet to entire room
     _args['connection_handler'].room_broadcast(_args['client']['room'], start.packet)
+
 
     # Set room status
     room['status'] = 3
@@ -1079,6 +1092,27 @@ def sync_state(_args, room):
 
             # End the game with the loss status
             game_end(_args=_args, room=room, status=0)
+
+
+def sync_equipped_items(_args, room):
+    """
+    Broadcast currently equipped head/body/arms for every slot in the room.
+    This uses the same packet shape as room-exit-shop equipment sync for client compatibility.
+    """
+    for slot_key, slot in room['slots'].items():
+        try:
+            wearing_items = Character.get_items(_args, slot['client']['character']['id'], 'wearing')
+            packet = PacketWrite(header=REPLY_ROOM_EXIT_SHOP)
+            packet.append_bytes(bytearray([0x01, 0x00]))
+            packet.append_integer(int(slot_key) - 1, 2, 'little')
+
+            for i in range(0, 3):
+                item = wearing_items['items'][list(wearing_items['items'].keys())[i]]
+                packet.append_integer(item['id'], 4, 'little')
+
+            _args['connection_handler'].room_broadcast(room['id'], packet.packet)
+        except Exception as e:
+            print('[ROOM] sync_equipped_items failed for slot={0}: {1}'.format(slot_key, str(e)))
 
 
 '''
