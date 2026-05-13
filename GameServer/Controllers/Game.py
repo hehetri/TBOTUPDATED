@@ -6,6 +6,7 @@ __version__ = '1.0'
 import _thread
 import datetime
 import random
+import re
 import time
 
 import MySQL.Interface as MySQL
@@ -26,6 +27,7 @@ from GameServer.Controllers.handlers import moderation
 from Packet.Write import Write as PacketWrite
 
 DOUBLE_XP_ITEM_IDS = [5020700, 5020701, 5020702, 5020703, 5020704]
+NAME_CHANGE_ITEM_ID = 5041903
 
 
 
@@ -1704,30 +1706,31 @@ def chat_command(**_args):
 
     if message.startswith('@'):
         command = message[1:]
+        command_lower = command.lower()
         is_admin = _args['client'].get('gm', 0) == 1
 
         # Handle exit requests
-        if command == 'exit':
+        if command_lower == 'exit':
             Room.remove_slot(_args, _args['client']['room'], _args['client'])
 
         # Force win command, only available to staff members
-        elif command == 'win' and is_admin:
+        elif command_lower == 'win' and is_admin:
             game_end(_args=_args, room=room, status=1)
 
         # Force lose command, only available to staff members
-        elif command == 'lose' and is_admin:
+        elif command_lower == 'lose' and is_admin:
             game_end(_args=_args, room=room, status=0)
 
         # Force time over command, only available to staff members
-        elif command == 'timeout' and is_admin:
+        elif command_lower == 'timeout' and is_admin:
             game_end(_args=_args, room=room, status=2)
 
         # Force time over command (death-match variant), only available to staff members
-        elif command == 'timeoutdm' and is_admin:
+        elif command_lower == 'timeoutdm' and is_admin:
             game_end(_args=_args, room=room, status=3)
 
         # Statistic modification for player battle modes
-        elif command[:5] in ['speed', 'gauge', 'reset']:
+        elif command_lower[:5] in ['speed', 'gauge', 'reset']:
 
             # Check if we are the room master
             if room['master'] != _args['client']:
@@ -1744,7 +1747,7 @@ def chat_command(**_args):
                                           'You can not change the statistics after the game has started', 2)
 
             # Split the command string, so we can begin to read values
-            command_split = command.split()
+            command_split = command_lower.split()
 
             # Read what we want to change
             what = command_split[0]
@@ -1799,7 +1802,7 @@ def chat_command(**_args):
             _args['connection_handler'].room_broadcast(room['id'], message)
 
         # Handle suicide requests
-        elif command == 'suicide':
+        elif command_lower == 'suicide':
 
             # Drop packet if the game has not started
             if room['status'] != 3:
@@ -1814,7 +1817,7 @@ def chat_command(**_args):
                 Lobby.chat_message(_args['client'], 'This command only works in planet mode', 2)
 
         # Handle kick requests
-        elif command[:4] == 'kick':
+        elif command_lower[:4] == 'kick':
 
             # Check message length
             if len(message) < 6:
@@ -1841,7 +1844,7 @@ def chat_command(**_args):
             # If we have passed the loop with no result, the player was not found
             Lobby.chat_message(_args['client'], 'Player {0} not found'.format(who), 2)
 
-        elif command == 'help':
+        elif command_lower == 'help':
 
             # List of commands
             commands = [
@@ -1869,6 +1872,10 @@ def chat_command(**_args):
                 {
                     "command": "@stat-help",
                     "description": "Tells you more about the ability to change player's statistics in Battle modes"
+                },
+                {
+                    "command": "@namechange <new_name>",
+                    "description": "Changes your character name (requires item 5041903)"
                 }
             ]
 
@@ -1876,7 +1883,7 @@ def chat_command(**_args):
                 Lobby.chat_message(_args['client'], '{0} -- {1}'.format(command['command'], command['description']), 2)
 
         # Mirror of the help command except it only lists commands used for player statistic alterations
-        elif command == 'stat-help':
+        elif command_lower == 'stat-help':
 
             commands = [
                 {
@@ -1897,6 +1904,41 @@ def chat_command(**_args):
 
             for command in commands:
                 Lobby.chat_message(_args['client'], '{0} -- {1}'.format(command['command'], command['description']), 2)
+
+        elif command_lower.startswith('namechange'):
+            command_split = command.split(maxsplit=1)
+            if len(command_split) != 2:
+                return Lobby.chat_message(_args['client'], 'Usage: @namechange <new_name>', 2)
+
+            new_name = command_split[1].strip()
+            current_name = _args['client']['character']['name']
+
+            if new_name == current_name:
+                return Lobby.chat_message(_args['client'], 'Your new name must be different from the current name.', 2)
+
+            if not re.match(r'^[a-zA-Z0-9]+$', new_name) or len(new_name) < 4 or len(new_name) > 13:
+                return Lobby.chat_message(_args['client'], 'Invalid name. Use only letters/numbers (4-13 chars).', 2)
+
+            inventory = get_items(_args, _args['client']['character']['id'], 'inventory')
+            name_change_item = None
+            for slot, data in inventory.items():
+                if data['id'] == NAME_CHANGE_ITEM_ID and data['character_item_id'] is not None:
+                    name_change_item = {'slot': slot, 'character_item_id': data['character_item_id']}
+                    break
+
+            if name_change_item is None:
+                return Lobby.chat_message(_args['client'], 'You need item 5041903 in your inventory to use this command.', 2)
+
+            _args['mysql'].execute('''SELECT `id` FROM `characters` WHERE `name` = %s''', [new_name])
+            if _args['mysql'].fetchone() is not None:
+                return Lobby.chat_message(_args['client'], 'This name is already in use.', 2)
+
+            _args['mysql'].execute('''UPDATE `characters` SET `name` = %s WHERE `id` = %s''', [
+                new_name, _args['client']['character']['id']
+            ])
+            remove_item(_args, name_change_item['character_item_id'], name_change_item['slot'])
+            _args['client']['character']['name'] = new_name
+            return Lobby.chat_message(_args['client'], 'Your character name has been changed successfully.', 3)
 
         else:
             Lobby.chat_message(_args['client'], 'Unknown command. Type @help for a list of commands', 2)
