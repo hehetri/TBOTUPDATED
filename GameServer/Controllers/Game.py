@@ -1153,8 +1153,10 @@ def post_game_transaction(_args, room, status=None):
         # Add party_experience to the addition_experience variable so that it is added to the total experience amount
         addition_experience += party_experience
 
-        # Apply DoubleXP inventory effect
+        # Apply DoubleXP inventory effect and track bonus to show in result screen (Cash item exp field)
+        cash_item_experience = 0
         if has_active_double_xp(character['id']):
+            cash_item_experience = addition_experience
             addition_experience *= 2
 
         # Check if we have leveled up
@@ -1209,6 +1211,7 @@ def post_game_transaction(_args, room, status=None):
             'addition_experience': addition_experience - party_experience,
             # The regular experience count is not part of any additional bonus
             'party_experience': party_experience,
+            'cash_item_experience': cash_item_experience,
             'addition_rank_experience': addition_rank_experience,
             'addition_gigas': addition_gigas,
             'experience': character['experience'],
@@ -1441,9 +1444,10 @@ def game_stats(_args, room, status=None):
     room_results.append_integer(1 if len(room['slots']) >= 2 else 0, 2, 'little')  # MVP
     room_results.append_integer(1 if len(room['slots']) >= 3 else 0, 2, 'little')  # Boss/Base killer number 1
 
-    # Cash item experience
-    for _ in range(8):
-        room_results.append_integer(0, 2, 'little')
+    # Cash item experience (e.g. DoubleXP item bonus shown in results)
+    for i in range(8):
+        room_results.append_integer(
+            0 if str(i + 1) not in information else information[str(i + 1)]['cash_item_experience'], 2, 'little')
 
     # Party experience
     for i in range(8):
