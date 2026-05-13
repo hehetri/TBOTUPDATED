@@ -199,22 +199,11 @@ def _extract_item_requirements(description):
         return requirements
 
     for item_name, item_ids in QUEST_ITEM_IDS.items():
-        aliases = [item_name]
-        if item_name.endswith('(Drop)'):
-            aliases.append(item_name[:-6])
-
-        found_alias = None
-        qty = 1
-        for alias in aliases:
-            if alias not in description:
-                continue
-            found_alias = alias
-            match = re.search(r'(\\d+)x\\s*' + re.escape(alias), description, flags=re.IGNORECASE)
-            qty = int(match.group(1)) if match else 1
-            break
-
-        if found_alias is not None:
-            requirements.append((item_name, item_ids, qty))
+        if item_name not in description:
+            continue
+        match = re.search(r'(\\d+)x\\s*' + re.escape(item_name), description, flags=re.IGNORECASE)
+        qty = int(match.group(1)) if match else 1
+        requirements.append((item_name, item_ids, qty))
     return requirements
 
 
