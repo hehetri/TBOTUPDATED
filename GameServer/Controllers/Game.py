@@ -1875,7 +1875,7 @@ def chat_command(**_args):
                 },
                 {
                     "command": "@namechange <new_name>",
-                    "description": "Changes your character name (requires item 5041903)"
+                    "description": "Changes your character name (requires Name Changer)"
                 }
             ]
 
@@ -1927,7 +1927,7 @@ def chat_command(**_args):
                     break
 
             if name_change_item is None:
-                return Lobby.chat_message(_args['client'], 'You need item 5041903 in your inventory to use this command.', 2)
+                return Lobby.chat_message(_args['client'], 'You need the Name Changer item in your inventory to use this command.', 2)
 
             _args['mysql'].execute('''SELECT `id` FROM `characters` WHERE `name` = %s''', [new_name])
             if _args['mysql'].fetchone() is not None:

@@ -5,7 +5,7 @@ __version__ = "1.0"
 
 from Packet.Write import Write as PacketWrite
 from GameServer.Controllers import Guild, Friend, Room, block
-from GameServer.Controllers.Character import get_items
+from GameServer.Controllers.Character import get_items, remove_item
 from GameServer.Controllers.data.lobby import LOBBY_MSG
 from GameServer.Controllers.Inbox import unread_message_notification
 from GameServer.Controllers.gifts import gift_count
@@ -13,8 +13,10 @@ from ratelimit import CHAT_RATE_LIMIT
 from pyrate_limiter import BucketFullException
 import datetime
 import os
+import re
 
 from GameServer.Controllers.admin_commands import handle_admin_command
+NAME_CHANGE_ITEM_ID = 5041903
 
 """
 This method will send a chat message to a specific target client
@@ -70,12 +72,47 @@ def chat(**_args):
         return
 
     if message_body.startswith('@'):
-        command = message_body[1:].strip().lower()
+        command_raw = message_body[1:].strip()
+        command = command_raw.lower()
         if command == 'help':
             chat_message(target=_args['client'], message='Available commands in lobby:', color=2)
             chat_message(target=_args['client'], message='@help -- show this command list', color=2)
+            chat_message(target=_args['client'], message='@namechange <new_name> -- change character name (requires Name Changer)', color=2)
             chat_message(target=_args['client'], message='@announce/@cash/@gigas/@item -- game master only', color=2)
             return
+        elif command.startswith('namechange'):
+            command_split = command_raw.split(maxsplit=1)
+            if len(command_split) != 2:
+                return chat_message(target=_args['client'], message='Usage: @namechange <new_name>', color=2)
+
+            new_name = command_split[1].strip()
+            current_name = _args['client']['character']['name']
+            if new_name == current_name:
+                return chat_message(target=_args['client'], message='Your new name must be different from the current name.', color=2)
+
+            if not re.match(r'^[a-zA-Z0-9]+$', new_name) or len(new_name) < 4 or len(new_name) > 13:
+                return chat_message(target=_args['client'], message='Invalid name. Use only letters/numbers (4-13 chars).', color=2)
+
+            inventory = get_items(_args, _args['client']['character']['id'], 'inventory')
+            name_change_item = None
+            for slot, data in inventory.items():
+                if data['id'] == NAME_CHANGE_ITEM_ID and data['character_item_id'] is not None:
+                    name_change_item = {'slot': slot, 'character_item_id': data['character_item_id']}
+                    break
+
+            if name_change_item is None:
+                return chat_message(target=_args['client'], message='You need the Name Changer item in your inventory to use this command.', color=2)
+
+            _args['mysql'].execute('''SELECT `id` FROM `characters` WHERE `name` = %s''', [new_name])
+            if _args['mysql'].fetchone() is not None:
+                return chat_message(target=_args['client'], message='This name is already in use.', color=2)
+
+            _args['mysql'].execute('''UPDATE `characters` SET `name` = %s WHERE `id` = %s''', [
+                new_name, _args['client']['character']['id']
+            ])
+            remove_item(_args, name_change_item['character_item_id'], name_change_item['slot'])
+            _args['client']['character']['name'] = new_name
+            return chat_message(target=_args['client'], message='Your character name has been changed successfully.', color=3)
 
     # If the message is a guild chat, send the message to all members in the user's guild
     if int(message_type) == 5:
