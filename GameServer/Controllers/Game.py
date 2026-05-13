@@ -25,6 +25,8 @@ from GameServer.Controllers.data.planet import PLANET_MAP_TABLE, PLANET_BOXES, P
 from GameServer.Controllers.handlers import moderation
 from Packet.Write import Write as PacketWrite
 
+DOUBLE_XP_ITEM_IDS = [5020700, 5020701, 5020702, 5020703, 5020704]
+
 
 
 
@@ -1051,6 +1053,14 @@ def post_game_transaction(_args, room, status=None):
 
     information = {}
 
+    def has_active_double_xp(character_id):
+        inventory = get_items(_args, character_id, 'inventory')
+        for _, item in inventory.items():
+            if item['id'] in DOUBLE_XP_ITEM_IDS:
+                # Permanent item keeps duration=0, timed items stay present while active.
+                return True
+        return False
+
     # Calculate new experience, level, etc. for all players in the room
     for key, slot in room['slots'].items():
 
@@ -1140,6 +1150,10 @@ def post_game_transaction(_args, room, status=None):
 
         # Add party_experience to the addition_experience variable so that it is added to the total experience amount
         addition_experience += party_experience
+
+        # Apply DoubleXP inventory effect
+        if has_active_double_xp(character['id']):
+            addition_experience *= 2
 
         # Check if we have leveled up
         level_up = character['level'] < MAX_LEVEL and character['experience'] + addition_experience >= EXP_TABLE[character['level'] + 1]
