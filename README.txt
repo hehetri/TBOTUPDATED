@@ -27,6 +27,16 @@ One of the latest additions is the command:
 
 @autosell → when activated inside a sector, it automatically sells item boxes according to the prices defined in the database.
 
+🚀 Quick Start
+
+1. Copy `example.env` to `.env` and adjust values for your environment.
+2. Install dependencies:
+   - `pip install -r requirements.txt`
+3. Start the server:
+   - `python main.py`
+
+If you use Windows, `start.bat` is also included as a convenience script.
+
 🙌 Credits
 
 👨‍💻 Original Creator: icseon
