@@ -9,6 +9,8 @@ from GameServer.Controllers.data.shop import ID_GUILD_EXTEND, ID_GOLD_BAR, ID_CH
 from GameServer.Controllers.data.bot import *
 from GameServer.Controllers import Guild
 
+DOUBLE_XP_ITEM_IDS = [5020700, 5020701, 5020702, 5020703, 5020704]
+
 '''
 This method will obtain the amount of cash a specific account has
 '''
@@ -191,7 +193,17 @@ def purchase_item(**_args):
 
         # If there are no errors, proceed to create an instance of character_items and insert the item into our
         # inventory
-        Character.add_item(_args, item, available_slot)
+        character_item_id = Character.add_item(_args, item, available_slot)
+
+        # Activate DoubleXP items immediately on purchase by setting expiration_date in DB.
+        if item['item_id'] in DOUBLE_XP_ITEM_IDS and character_item_id is not None:
+            _args['mysql'].execute("""UPDATE `character_items` SET `used` = 1,
+                            `expiration_date` = IF(`remaining_seconds` IS NULL,
+                                DATE_ADD(UTC_TIMESTAMP(), INTERVAL (SELECT `duration` FROM `game_items` WHERE `id` = `game_item`) DAY),
+                                DATE_ADD(UTC_TIMESTAMP(), INTERVAL `remaining_seconds` SECOND)
+                            ),
+                            `remaining_seconds` = NULL
+                            WHERE `id` = %s AND `used` IS NOT NULL""", [character_item_id])
 
     # Send packet to sync the inventory and currency state
     sync_inventory(_args, 'purchase' if type_data['type'] == 'gold' else 'purchase_cash')

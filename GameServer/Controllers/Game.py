@@ -6,11 +6,12 @@ __version__ = '1.0'
 import _thread
 import datetime
 import random
+import re
 import time
 
 import MySQL.Interface as MySQL
 from GameServer.Controllers.admin_commands import handle_admin_command
-from GameServer.Controllers import Lobby, Room, Guild
+from GameServer.Controllers import Lobby, Room, Guild, Missions
 from GameServer.Controllers.Character import get_items, add_item, get_available_inventory_slot, remove_expired_items, \
     remove_item, construct_bot_data
 from GameServer.Controllers.data.bot import *
@@ -18,11 +19,18 @@ from GameServer.Controllers.data.client import CLIENT_FILE_HASHES
 from GameServer.Controllers.data.drops import *
 from GameServer.Controllers.data.exp import *
 from GameServer.Controllers.data.game import *
+from GameServer.Controllers.data.packet_write import REPLY_ADD_CLIENT_INFO
 from GameServer.Controllers.data.military import MILITARY_BASE
 from GameServer.Controllers.data.planet import PLANET_MAP_TABLE, PLANET_BOXES, PLANET_BOX_MOBS, PLANET_DROPS, \
     PLANET_ASSISTS, PLANET_CANISTER_EXCEPTIONS
 from GameServer.Controllers.handlers import moderation
 from Packet.Write import Write as PacketWrite
+
+DOUBLE_XP_ITEM_IDS = [5020700, 5020701, 5020702, 5020703, 5020704]
+NAME_CHANGE_ITEM_ID = 5041903
+
+
+
 
 """
 This controller is responsible for handling all game related actions
@@ -132,7 +140,8 @@ def monster_kill(**_args):
         drops += [
             (CANISTER_REBIRTH, 0.02),
             (CANISTER_BOMB, 0.02),
-            (CHEST_GOLD, 0.007)
+            (CHEST_GOLD, 0.007),
+            (CHEST_GREEN, 0.004)
         ]
 
         # If the monster is a mob from which to drop boxes from, append the boxes array
@@ -249,6 +258,8 @@ def monster_kill(**_args):
 
         # Write the monster kill amount to the player data container as well
         room['player_data']['monster_kills'][str(who + 1)] = room['slots'][str(who + 1)]['monster_kills']
+        Missions.update_kill_progress(_args, room, 1)
+        Missions.grant_quest_drop_on_kill(_args, room, who + 1)
 
     # Add the monster to the killed mob array, but only if we're in planet or military mode and if it isn't already
     # in the array
@@ -303,6 +314,10 @@ def use_item(**_args):
         for key, slot in room['slots'].items():
             slot['dead'] = False
 
+    # Force/validate transformation server-side when transformation canister is used
+    if item_type == CANISTER_TRANS_UP:
+        pass
+
     # If the item is OIL, process oil pickup
     if item_type in [OIL_YELLOW, OIL_ORANGE, OIL_BLUE, OIL_PINK]:
         # Container for the amount of oil a player receives per type
@@ -345,6 +360,9 @@ def use_item(**_args):
                 6000002,
                 6000003
             ][random.randint(0, 2)]
+        elif item_type == CHEST_GREEN:
+            # Dedicated CHEST_GREEN reward item
+            item_id = 9900170
         else:
 
             # If we do not have this item type in the drop table, do nothing
@@ -1002,6 +1020,14 @@ def game_end(_args, room, status=None):
             except Exception:
                 pass
 
+    # Update mission completion state before game statistics
+    completed_notifications = Missions.complete_map_missions(_args, room)
+    if completed_notifications is not None:
+        for _, slot in room['slots'].items():
+            character_id = slot['client']['character']['id']
+            if character_id in completed_notifications:
+                Lobby.chat_message(slot['client'], '[QUEST COMPLETED] One or more quests were completed.', 3)
+
     # Start new thread for the game statistics
     _thread.start_new_thread(game_stats, (_args, room, status))
 
@@ -1028,6 +1054,14 @@ def post_game_transaction(_args, room, status=None):
         anti_hack_check(_args, room)
 
     information = {}
+
+    def has_active_double_xp(character_id):
+        inventory = get_items(_args, character_id, 'inventory')
+        for _, item in inventory.items():
+            if item['id'] in DOUBLE_XP_ITEM_IDS:
+                # Permanent item keeps duration=0, timed items stay present while active.
+                return True
+        return False
 
     # Calculate new experience, level, etc. for all players in the room
     for key, slot in room['slots'].items():
@@ -1119,6 +1153,12 @@ def post_game_transaction(_args, room, status=None):
         # Add party_experience to the addition_experience variable so that it is added to the total experience amount
         addition_experience += party_experience
 
+        # Apply DoubleXP inventory effect and track bonus to show in result screen (Cash item exp field)
+        cash_item_experience = 0
+        if has_active_double_xp(character['id']):
+            cash_item_experience = addition_experience
+            addition_experience *= 2
+
         # Check if we have leveled up
         level_up = character['level'] < MAX_LEVEL and character['experience'] + addition_experience >= EXP_TABLE[character['level'] + 1]
         if level_up:
@@ -1171,6 +1211,7 @@ def post_game_transaction(_args, room, status=None):
             'addition_experience': addition_experience - party_experience,
             # The regular experience count is not part of any additional bonus
             'party_experience': party_experience,
+            'cash_item_experience': cash_item_experience,
             'addition_rank_experience': addition_rank_experience,
             'addition_gigas': addition_gigas,
             'experience': character['experience'],
@@ -1403,9 +1444,10 @@ def game_stats(_args, room, status=None):
     room_results.append_integer(1 if len(room['slots']) >= 2 else 0, 2, 'little')  # MVP
     room_results.append_integer(1 if len(room['slots']) >= 3 else 0, 2, 'little')  # Boss/Base killer number 1
 
-    # Cash item experience
-    for _ in range(8):
-        room_results.append_integer(0, 2, 'little')
+    # Cash item experience (e.g. DoubleXP item bonus shown in results)
+    for i in range(8):
+        room_results.append_integer(
+            0 if str(i + 1) not in information else information[str(i + 1)]['cash_item_experience'], 2, 'little')
 
     # Party experience
     for i in range(8):
@@ -1668,30 +1710,31 @@ def chat_command(**_args):
 
     if message.startswith('@'):
         command = message[1:]
+        command_lower = command.lower()
         is_admin = _args['client'].get('gm', 0) == 1
 
         # Handle exit requests
-        if command == 'exit':
+        if command_lower == 'exit':
             Room.remove_slot(_args, _args['client']['room'], _args['client'])
 
         # Force win command, only available to staff members
-        elif command == 'win' and is_admin:
+        elif command_lower == 'win' and is_admin:
             game_end(_args=_args, room=room, status=1)
 
         # Force lose command, only available to staff members
-        elif command == 'lose' and is_admin:
+        elif command_lower == 'lose' and is_admin:
             game_end(_args=_args, room=room, status=0)
 
         # Force time over command, only available to staff members
-        elif command == 'timeout' and is_admin:
+        elif command_lower == 'timeout' and is_admin:
             game_end(_args=_args, room=room, status=2)
 
         # Force time over command (death-match variant), only available to staff members
-        elif command == 'timeoutdm' and is_admin:
+        elif command_lower == 'timeoutdm' and is_admin:
             game_end(_args=_args, room=room, status=3)
 
         # Statistic modification for player battle modes
-        elif command[:5] in ['speed', 'gauge', 'reset']:
+        elif command_lower[:5] in ['speed', 'gauge', 'reset']:
 
             # Check if we are the room master
             if room['master'] != _args['client']:
@@ -1708,7 +1751,7 @@ def chat_command(**_args):
                                           'You can not change the statistics after the game has started', 2)
 
             # Split the command string, so we can begin to read values
-            command_split = command.split()
+            command_split = command_lower.split()
 
             # Read what we want to change
             what = command_split[0]
@@ -1763,7 +1806,7 @@ def chat_command(**_args):
             _args['connection_handler'].room_broadcast(room['id'], message)
 
         # Handle suicide requests
-        elif command == 'suicide':
+        elif command_lower == 'suicide':
 
             # Drop packet if the game has not started
             if room['status'] != 3:
@@ -1778,7 +1821,7 @@ def chat_command(**_args):
                 Lobby.chat_message(_args['client'], 'This command only works in planet mode', 2)
 
         # Handle kick requests
-        elif command[:4] == 'kick':
+        elif command_lower[:4] == 'kick':
 
             # Check message length
             if len(message) < 6:
@@ -1805,7 +1848,7 @@ def chat_command(**_args):
             # If we have passed the loop with no result, the player was not found
             Lobby.chat_message(_args['client'], 'Player {0} not found'.format(who), 2)
 
-        elif command == 'help':
+        elif command_lower == 'help':
 
             # List of commands
             commands = [
@@ -1833,6 +1876,10 @@ def chat_command(**_args):
                 {
                     "command": "@stat-help",
                     "description": "Tells you more about the ability to change player's statistics in Battle modes"
+                },
+                {
+                    "command": "@namechange <new_name>",
+                    "description": "Changes your character name (requires Name Changer)"
                 }
             ]
 
@@ -1840,7 +1887,7 @@ def chat_command(**_args):
                 Lobby.chat_message(_args['client'], '{0} -- {1}'.format(command['command'], command['description']), 2)
 
         # Mirror of the help command except it only lists commands used for player statistic alterations
-        elif command == 'stat-help':
+        elif command_lower == 'stat-help':
 
             commands = [
                 {
@@ -1861,6 +1908,41 @@ def chat_command(**_args):
 
             for command in commands:
                 Lobby.chat_message(_args['client'], '{0} -- {1}'.format(command['command'], command['description']), 2)
+
+        elif command_lower.startswith('namechange'):
+            command_split = command.split(maxsplit=1)
+            if len(command_split) != 2:
+                return Lobby.chat_message(_args['client'], 'Usage: @namechange <new_name>', 2)
+
+            new_name = command_split[1].strip()
+            current_name = _args['client']['character']['name']
+
+            if new_name == current_name:
+                return Lobby.chat_message(_args['client'], 'Your new name must be different from the current name.', 2)
+
+            if not re.match(r'^[a-zA-Z0-9]+$', new_name) or len(new_name) < 4 or len(new_name) > 13:
+                return Lobby.chat_message(_args['client'], 'Invalid name. Use only letters/numbers (4-13 chars).', 2)
+
+            inventory = get_items(_args, _args['client']['character']['id'], 'inventory')
+            name_change_item = None
+            for slot, data in inventory.items():
+                if data['id'] == NAME_CHANGE_ITEM_ID and data['character_item_id'] is not None:
+                    name_change_item = {'slot': slot, 'character_item_id': data['character_item_id']}
+                    break
+
+            if name_change_item is None:
+                return Lobby.chat_message(_args['client'], 'You need the Name Changer item in your inventory to use this command.', 2)
+
+            _args['mysql'].execute('''SELECT `id` FROM `characters` WHERE `name` = %s''', [new_name])
+            if _args['mysql'].fetchone() is not None:
+                return Lobby.chat_message(_args['client'], 'This name is already in use.', 2)
+
+            _args['mysql'].execute('''UPDATE `characters` SET `name` = %s WHERE `id` = %s''', [
+                new_name, _args['client']['character']['id']
+            ])
+            remove_item(_args, name_change_item['character_item_id'], name_change_item['slot'])
+            _args['client']['character']['name'] = new_name
+            return Lobby.chat_message(_args['client'], 'Your character name has been changed successfully.', 3)
 
         else:
             Lobby.chat_message(_args['client'], 'Unknown command. Type @help for a list of commands', 2)
