@@ -124,7 +124,10 @@ def get_items(_args, character_id, mode='wearing', external_id=None):
         for i in range(1, item_range):
             _args['mysql'].execute("""SELECT    IFNULL(gitem.`item_id`, 0)                                      
                                                     AS `item_id`,
-                                                TIMESTAMPDIFF(HOUR, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL `remaining_seconds` SECOND))
+                                                IF(citem.`expiration_date` IS NULL,
+                                                    TIMESTAMPDIFF(HOUR, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL citem.`remaining_seconds` SECOND)),
+                                                    TIMESTAMPDIFF(HOUR, UTC_TIMESTAMP(), citem.`expiration_date`)
+                                                )
                                                     AS `remaining_hours`,
                                                 citem.`remaining_games`                                        
                                                     AS `remaining_games`,
@@ -209,6 +212,7 @@ This method inserts a new item into character_items and puts it in our inventory
 def add_item(_args, item, slot, inventory_insert=True):
     # Standard values. The used parameter is set only if the duration of the item is greater than 0
     remaining_games, remaining_times, used = None, None, (0 if item['duration'] > 0 else None)
+    expiration_days = None
 
     '''
     If the part is a pack or a special part, add the amount of times they can be used
@@ -224,10 +228,18 @@ def add_item(_args, item, slot, inventory_insert=True):
     if item['part_type'] in (5, 12, 13) and item['duration'] > 0:
         remaining_games, used = item['duration'], None
 
+    # This timed item is not wearable, so its day countdown must start immediately when purchased.
+    if item['item_id'] == 5020700 and item['duration'] > 0:
+        remaining_games, remaining_times, used = None, None, 1
+        expiration_days = item['duration']
+
     # Insert into character items
-    _args['mysql'].execute("""INSERT INTO `character_items` (`game_item`, `remaining_games`, `remaining_times`, `used`)
-     VALUES (%s, %s, %s, %s)""", [
+    _args['mysql'].execute("""INSERT INTO `character_items`
+        (`game_item`, `expiration_date`, `remaining_games`, `remaining_times`, `used`)
+        VALUES (%s, IF(%s IS NULL, NULL, DATE_ADD(UTC_TIMESTAMP(), INTERVAL %s DAY)), %s, %s, %s)""", [
         item['id'],
+        expiration_days,
+        expiration_days,
         remaining_games,
         remaining_times,
         used
